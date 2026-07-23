@@ -152,6 +152,16 @@ unencrypted link. ESPHome does not initiate encryption on its own, so the
 `terma_moa` component calls `esp_ble_set_encryption` on `ESP_GATTC_OPEN_EVT`. This
 is the whole reason the component exists.
 
+## Extending it (new models / features)
+
+Want to add support for another Terma Blue Line model, or a feature this doesn't
+cover yet (e.g. the weekly schedule)? See
+**[docs/reverse-engineering.md](docs/reverse-engineering.md)** — it walks through
+how the protocol above was worked out: browsing the GATT layout (nRF Connect /
+verbose ESPHome logs), reading and poking characteristics from the ESP, and
+snooping the official app (PacketLogger / HCI snoop + tshark) to capture write
+sequences. PRs updating the protocol table are welcome.
+
 ## Acknowledgments
 
 This project began as a fork of Andrew's
