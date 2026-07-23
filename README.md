@@ -69,26 +69,56 @@ temperatures.
 
 ## Installation
 
-1. **Clone this repo** next to your ESPHome config, or copy the `components/`
-   directory and `terma-moa-blue.example.yaml` into your ESPHome directory. The
-   config references the component via `external_components: { type: local }`.
+You don't copy the big config — your device imports it from this repo over git.
+In **ESPHome Builder** (or a local ESPHome), create a device with a config like
+[`terma-moa-blue.example.yaml`](terma-moa-blue.example.yaml):
 
-2. **Create your secrets.** Copy `secrets.yaml.example` to `secrets.yaml` and fill
-   in your Wi-Fi, an API encryption key, an OTA password, an AP fallback password,
-   and your radiator's MAC address:
+```yaml
+substitutions:
+  device_name: terma-moa-blue
+  friendly_name: "Terma MOA Blue"
+  board: esp32dev
+  radiator_mac: !secret radiator_mac
 
-   ```yaml
-   radiator_mac: "XX:XX:XX:XX:XX:XX"
-   ```
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
 
-   Find the MAC in the Terma app, with a scanner like **nRF Connect**, or from
-   this device's `esp32_ble_tracker` logs on first boot.
+esp32:
+  board: ${board}
+  framework:
+    type: esp-idf          # required by the terma_moa component
 
-3. **Adjust the config.** In `terma-moa-blue.example.yaml`, set `board:` to your
-   ESP32 and rename it if you like. (Copy it to your own `.yaml` — the `.example`
-   name is just to keep it out of the way.)
+logger:
+api:
+  encryption:
+    key: !secret api_encryption_key
+ota:
+  - platform: esphome
+    password: !secret ota_password
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
 
-4. **Flash** with ESPHome (`esphome run terma-moa-blue.example.yaml`).
+external_components:
+  - source: github://kumalg/esphome-terma-blue-line@main
+    components: [terma_moa]
+
+packages:
+  terma: github://kumalg/esphome-terma-blue-line/terma.package.yaml@main
+```
+
+1. **Create your secrets.** Copy `secrets.yaml.example` to `secrets.yaml` and fill
+   in Wi-Fi, an API encryption key, an OTA password, an AP fallback password, and
+   your radiator's MAC (`radiator_mac`).
+2. **Set `board:`** to your ESP32. Leave `framework: esp-idf` — the component
+   requires it.
+3. **Flash** with ESPHome (`esphome run terma-moa-blue.example.yaml`), or just
+   Install from ESPHome Builder.
+
+Pin `@main` to a released tag (e.g. `@v1.0.0`) once the repo is tagged, for
+reproducible builds. To override the pairing PIN, add `passkey: "your-pin"` under
+`substitutions`.
 
 ### First pairing
 
@@ -103,6 +133,48 @@ The radiator only bonds when it's in **pairing mode**:
 
 To re-pair (e.g. after replacing the ESP), press **Clear BLE Bonds**, restart the
 ESP, and put the radiator back in pairing mode.
+
+### Local development (for contributors)
+
+To hack on the C++ component or the entities and flash without pushing to git
+first, create a personal `dev.yaml` (gitignored) that includes the package
+locally and points `external_components` at your working copy:
+
+```yaml
+substitutions:
+  device_name: terma-dev
+  friendly_name: "Terma Dev"
+  board: esp32dev
+  radiator_mac: !secret radiator_mac
+
+esphome:
+  name: ${device_name}
+esp32:
+  board: ${board}
+  framework:
+    type: esp-idf
+logger:
+api:
+  encryption:
+    key: !secret api_encryption_key
+ota:
+  - platform: esphome
+    password: !secret ota_password
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+external_components:
+  - source:
+      type: local
+      path: components
+
+packages:
+  terma: !include terma.package.yaml
+```
+
+`esphome run dev.yaml` then picks up local edits to both `components/` and
+`terma.package.yaml` immediately.
 
 ## Protocol reference
 
