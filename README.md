@@ -57,6 +57,109 @@ framework.
 | Start Timer / Stop Timer | button | Start or cancel the auto-off timer |
 | Clear BLE Bonds / Restart | button (diagnostic) | Re-pairing / reboot |
 
+## Optional: one adaptive control in Home Assistant
+
+The integration deliberately exposes **Heat Mode** plus **separate Element/Room
+target** numbers, because an ESPHome entity's `min`/`max`/`step` are fixed when it
+registers — a single number can't retune its range per mode. If you'd rather drive
+the radiator from **one** control whose range follows the mode, do it on the Home
+Assistant side; the raw entities keep working, so this is purely optional and needs
+**no firmware change**.
+
+In the snippets below, replace the `terma_moa_blue` entity prefix with your own
+device's (check Developer Tools → States).
+
+### A thermostat card (`climate_template`, HACS custom component)
+
+Gives a proper thermostat entity — round dial, Element/Room preset, on/off — whose
+range flips per mode. Install [jcwillox/hass-template-climate](https://github.com/jcwillox/hass-template-climate)
+as a HACS custom repository (category *Integration*) and **restart HA** (this custom
+platform loads at startup — it doesn't reload live). Then:
+
+```yaml
+climate:
+  - platform: climate_template
+    name: "Radiator"
+    unique_id: terma_radiator_climate
+    icon: mdi:radiator
+    modes: ["off", "heat"]          # NB: key is `modes`, not `hvac_modes`
+    temp_step: 0.5
+    # range flips per mode (jcwillox supports templated min/max):
+    min_temp_template: "{{ 30 if is_state('select.terma_moa_blue_heat_mode', 'Element') else 15 }}"
+    max_temp_template: "{{ 60 if is_state('select.terma_moa_blue_heat_mode', 'Element') else 30 }}"
+    current_temperature_template: >-
+      {{ states('sensor.terma_moa_blue_radiator_element_temperature')
+         if is_state('select.terma_moa_blue_heat_mode', 'Element')
+         else states('sensor.terma_moa_blue_radiator_room_sensor') }}
+    target_temperature_template: >-
+      {{ states('number.terma_moa_blue_element_target_temperature')
+         if is_state('select.terma_moa_blue_heat_mode', 'Element')
+         else states('number.terma_moa_blue_room_target_temperature') }}
+    hvac_mode_template: "{{ 'heat' if is_state('switch.terma_moa_blue_radiator_power', 'on') else 'off' }}"
+    preset_modes: ["Element", "Room"]
+    preset_mode_template: "{{ states('select.terma_moa_blue_heat_mode') }}"
+    set_hvac_mode:
+      - choose:
+          - conditions: "{{ hvac_mode == 'heat' }}"
+            sequence:
+              - service: switch.turn_on
+                target: { entity_id: switch.terma_moa_blue_radiator_power }
+        default:
+          - service: switch.turn_off
+            target: { entity_id: switch.terma_moa_blue_radiator_power }
+    set_preset_mode:
+      - service: select.select_option
+        target: { entity_id: select.terma_moa_blue_heat_mode }
+        data: { option: "{{ preset_mode }}" }
+    set_temperature:
+      - choose:
+          - conditions: "{{ is_state('select.terma_moa_blue_heat_mode', 'Element') }}"
+            sequence:
+              - service: number.set_value
+                target: { entity_id: number.terma_moa_blue_element_target_temperature }
+                # snap to the nearest 7.5° element level, clamped 30–60:
+                data: { value: "{{ [[ ((temperature / 7.5) | round(0)) * 7.5, 30] | max, 60] | min }}" }
+        default:
+          - service: number.set_value
+            target: { entity_id: number.terma_moa_blue_room_target_temperature }
+            data: { value: "{{ temperature }}" }
+```
+
+Notes: the dial uses a single 0.5° step, so Element targets **snap to the nearest
+valid level** (30 / 37.5 / 45 / 52.5 / 60) on write. The auto-off timer has no
+climate equivalent — keep using the **Start/Stop Timer** buttons. `climate_template`
+is community-maintained; after HA upgrades, glance at the logs for deprecations.
+
+### Lighter alternative: a template number (core HA, no custom component)
+
+If you don't want a custom component, a core [`template`](https://www.home-assistant.io/integrations/template/)
+number gives you one control whose `min`/`max`/**and step** all follow the mode
+(the step adaptivity a `climate` entity can't do), and it reloads live:
+
+```yaml
+template:
+  - number:
+      - name: "Radiator Target"
+        unit_of_measurement: "°C"
+        min:  "{{ 30  if is_state('select.terma_moa_blue_heat_mode', 'Element') else 15 }}"
+        max:  "{{ 60  if is_state('select.terma_moa_blue_heat_mode', 'Element') else 30 }}"
+        step: "{{ 7.5 if is_state('select.terma_moa_blue_heat_mode', 'Element') else 0.5 }}"
+        state: >-
+          {{ states('number.terma_moa_blue_element_target_temperature')
+             if is_state('select.terma_moa_blue_heat_mode', 'Element')
+             else states('number.terma_moa_blue_room_target_temperature') }}
+        set_value:
+          - if: "{{ is_state('select.terma_moa_blue_heat_mode', 'Element') }}"
+            then:
+              - action: number.set_value
+                target: { entity_id: number.terma_moa_blue_element_target_temperature }
+                data: { value: "{{ value }}" }
+            else:
+              - action: number.set_value
+                target: { entity_id: number.terma_moa_blue_room_target_temperature }
+                data: { value: "{{ value }}" }
+```
+
 ## Hardware
 
 - Any **ESP32** with Bluetooth LE. Developed on a **Seeed XIAO ESP32-C6**
