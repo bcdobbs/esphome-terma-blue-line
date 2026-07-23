@@ -69,9 +69,9 @@ temperatures.
 
 ## Installation
 
-You don't copy the big config anymore — your device imports it from this repo
-over git. In **ESPHome Builder** (or a local ESPHome), create a device with a
-config like [`terma-moa-blue.example.yaml`](terma-moa-blue.example.yaml):
+You don't copy the big config — your device imports it from this repo over git.
+In **ESPHome Builder** (or a local ESPHome), create a device with a config like
+[`terma-moa-blue.example.yaml`](terma-moa-blue.example.yaml):
 
 ```yaml
 substitutions:
