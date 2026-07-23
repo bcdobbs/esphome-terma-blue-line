@@ -4,6 +4,9 @@
 # Secrets — never commit real credentials or your radiator's MAC
 secrets.yaml
 
+# Maintainer's personal local-dev entry file (uses local components + !include)
+dev.yaml
+
 # Local BLE snoops / logs (may contain your MAC + local network info)
 logs/
 
