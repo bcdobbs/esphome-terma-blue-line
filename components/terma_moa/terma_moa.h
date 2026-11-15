@@ -17,15 +17,18 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace esphome {
 namespace terma_moa {
 
-// Byte order of the radiator's 16-bit fields. Upstream-verified units are little-
-// endian; others report the same fields big-endian (e.g. element raw 01 75 02 58 =
-// 37.3 / 60.0 C). Set with `byte_order:` on the terma_moa component.
-enum class TermaByteOrder : uint8_t { LITTLE = 0, BIG = 1 };
+// Protocol generation spoken by the radiator. Set with `protocol:` on the component.
+//   MODERN: little-endian uint16 values, 4-byte mode payload, room 0x11 / element 0x21,
+//           timers 0x03 / 0x05 / 0x09.
+//   LEGACY: big-endian uint16 values (element raw 01 75 02 58 = 37.3 / 60.0 C), 1-byte
+//           mode payload, room 5 / element 6, no timer.
+enum class TermaProtocol : uint8_t { MODERN = 0, LEGACY = 1 };
 
 // Registers as a node on a `ble_client` and, the moment the GATT connection
 // opens, proactively requests link encryption. The Terma MOA Blue refuses to
@@ -33,33 +36,45 @@ enum class TermaByteOrder : uint8_t { LITTLE = 0, BIG = 1 };
 // insufficient-authentication), and ESPHome never initiates encryption on its
 // own, so we do it here.
 //
-// It also owns the radiator's byte order, so every read and write in the YAML goes
-// through decode_u16() / encode_u16_pair() instead of hand-rolled byte maths.
+// It also owns the radiator's protocol generation, so every value and mode byte the
+// YAML reads or writes goes through the helpers below instead of hand-rolled bytes.
 class TermaMoa : public Component, public ble_client::BLEClientNode {
  public:
   void dump_config() override;
   void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
                            esp_ble_gattc_cb_param_t *param) override;
 
-  void set_byte_order(TermaByteOrder order) { this->byte_order_ = order; }
-  bool is_big_endian() const { return this->byte_order_ == TermaByteOrder::BIG; }
+  void set_protocol(TermaProtocol protocol) { this->protocol_ = protocol; }
+  bool is_legacy() const { return this->protocol_ == TermaProtocol::LEGACY; }
 
-  // Decode the uint16 at x[offset], x[offset + 1] in the configured byte order.
-  // Caller must ensure x.size() >= offset + 2.
+  // ---- 16-bit values (temperatures x10, timer seconds) ----
+  // Decode the uint16 at x[offset], x[offset + 1]. Caller ensures x.size() >= offset + 2.
   uint16_t decode_u16(const std::vector<uint8_t> &x, size_t offset) const;
-
-  // Encode two uint16s into a 4-byte payload {first, second} in the configured order.
-  // Targets are written as encode_u16_pair(0, temp_x10); the timer as (secs, secs).
+  // Encode {first, second} as a 4-byte payload. Targets: (0, temp_x10); timer: (s, s).
   std::vector<uint8_t> encode_u16_pair(uint16_t first, uint16_t second) const;
 
-  // Sanity-check an element (b2) payload: if its target (bytes 2-3) is only a valid
-  // element temperature (30-60 C) when read in the *other* byte order, log a warning
-  // once suggesting the byte_order setting. Never changes behaviour.
-  void check_element_byte_order(const std::vector<uint8_t> &x);
+  // ---- operating mode (b3) ----
+  // Mode byte for continuous heating in room or element regulation.
+  int mode_manual(bool room) const;
+  // Payload for writing a mode byte: 1 byte (legacy) or 4 bytes (modern).
+  std::vector<uint8_t> encode_mode(int mode) const;
+  bool is_heating(int mode) const;
+  bool is_room_mode(int mode) const;
+  bool is_element_mode(int mode) const;
+  bool is_timer_mode(int mode) const;
+  bool supports_timer() const { return !this->is_legacy(); }
+  // Human-readable status for the mode byte.
+  std::string mode_name(int mode) const;
+
+  // ---- diagnostics: warn once if the radiator looks like the other protocol ----
+  void check_element_payload(const std::vector<uint8_t> &x);
+  void check_mode_payload(const std::vector<uint8_t> &x);
 
  protected:
-  TermaByteOrder byte_order_{TermaByteOrder::LITTLE};
-  bool byte_order_warned_{false};
+  void warn_protocol_(const char *evidence);
+  TermaProtocol protocol_{TermaProtocol::MODERN};
+  bool protocol_warned_{false};
+};
 };
 
 }  // namespace terma_moa

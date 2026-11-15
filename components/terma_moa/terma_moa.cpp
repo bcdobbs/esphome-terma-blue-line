@@ -9,6 +9,7 @@
 
 #include "terma_moa.h"
 #include "esphome/core/log.h"
+#include <cstdio>
 #include "esphome/components/esp32_ble_tracker/esp32_ble_tracker.h"
 
 namespace esphome {
@@ -18,17 +19,17 @@ static const char *const TAG = "terma_moa";
 
 void TermaMoa::dump_config() {
   ESP_LOGCONFIG(TAG, "Terma MOA Blue: requesting link encryption automatically on connect");
-  ESP_LOGCONFIG(TAG, "  Byte order: %s", this->is_big_endian() ? "big" : "little");
+  ESP_LOGCONFIG(TAG, "  Protocol: %s", this->is_legacy() ? "legacy" : "modern");
 }
 
 uint16_t TermaMoa::decode_u16(const std::vector<uint8_t> &x, size_t offset) const {
   const uint8_t a = x[offset];
   const uint8_t b = x[offset + 1];
-  return this->is_big_endian() ? (uint16_t) ((a << 8) | b) : (uint16_t) ((b << 8) | a);
+  return this->is_legacy() ? (uint16_t) ((a << 8) | b) : (uint16_t) ((b << 8) | a);
 }
 
 std::vector<uint8_t> TermaMoa::encode_u16_pair(uint16_t first, uint16_t second) const {
-  if (this->is_big_endian()) {
+  if (this->is_legacy()) {
     return {(uint8_t) (first >> 8), (uint8_t) (first & 0xFF), (uint8_t) (second >> 8),
             (uint8_t) (second & 0xFF)};
   }
@@ -36,22 +37,121 @@ std::vector<uint8_t> TermaMoa::encode_u16_pair(uint16_t first, uint16_t second) 
           (uint8_t) (second >> 8)};
 }
 
-void TermaMoa::check_element_byte_order(const std::vector<uint8_t> &x) {
-  if (this->byte_order_warned_ || x.size() < 4)
+int TermaMoa::mode_manual(bool room) const {
+  if (this->is_legacy())
+    return room ? 0x05 : 0x06;
+  return room ? 0x11 : 0x21;
+}
+
+std::vector<uint8_t> TermaMoa::encode_mode(int mode) const {
+  if (this->is_legacy())
+    return {(uint8_t) mode};
+  return {(uint8_t) mode, 0, 0, 0};
+}
+
+bool TermaMoa::is_heating(int mode) const {
+  if (this->is_legacy())
+    return mode != 0x00;
+  // Modern: off is 0x00 (physical) or 0x20 (via app on newer firmware).
+  return mode != 0x00 && mode != 0x20;
+}
+
+bool TermaMoa::is_room_mode(int mode) const {
+  if (this->is_legacy())
+    return mode == 0x05;
+  return mode == 0x11 || mode == 0x03;
+}
+
+bool TermaMoa::is_element_mode(int mode) const {
+  if (this->is_legacy())
+    return mode == 0x06;
+  return mode == 0x21 || mode == 0x05;
+}
+
+bool TermaMoa::is_timer_mode(int mode) const {
+  if (this->is_legacy())
+    return false;
+  return mode == 0x03 || mode == 0x05 || mode == 0x09;
+}
+
+std::string TermaMoa::mode_name(int mode) const {
+  if (this->is_legacy()) {
+    switch (mode) {
+      case 0x00:
+        return "Off";
+      case 0x05:
+        return "Room";
+      case 0x06:
+        return "Element";
+      default:
+        break;
+    }
+  } else {
+    // The modern b3 byte is a bitfield. Observed: 0x00 off, 0x20 off (remote/app),
+    // 0x01 on, 0x03 room+timer, 0x05 element+timer, 0x09 physical timer,
+    // 0x11 room+manual, 0x21 element+manual.
+    switch (mode) {
+      case 0x00:
+        return "Off";
+      case 0x20:
+        return "Off (remote)";
+      case 0x11:
+        return "Room - Manual";
+      case 0x21:
+        return "Element - Manual";
+      case 0x03:
+        return "Room - Timer";
+      case 0x05:
+        return "Element - Timer";
+      case 0x09:
+        return "Timer (physical)";
+      case 0x01:
+        return "On";
+      default:
+        break;
+    }
+  }
+  char buf[20];
+  snprintf(buf, sizeof(buf), "On (0x%02X)", mode);
+  return std::string(buf);
+}
+
+void TermaMoa::warn_protocol_(const char *evidence) {
+  if (this->protocol_warned_)
     return;
+  this->protocol_warned_ = true;
+  const char *other = this->is_legacy() ? "modern" : "legacy";
+  ESP_LOGW(TAG,
+           "%s - this radiator looks like it speaks the %s protocol. Set the substitution "
+           "protocol: %s and reflash (see README \"Protocol versions\").",
+           evidence, other, other);
+}
+
+void TermaMoa::check_element_payload(const std::vector<uint8_t> &x) {
+  if (this->protocol_warned_ || x.size() < 4)
+    return;
+  // The element target (bytes 2-3) is always 30-60 C. If it's only in range when read
+  // in the other byte order, the protocol setting is wrong.
   const float as_configured = this->decode_u16(x, 2) / 10.0f;
-  const uint16_t swapped_raw = this->is_big_endian() ? (uint16_t) ((x[3] << 8) | x[2])
-                                                     : (uint16_t) ((x[2] << 8) | x[3]);
+  const uint16_t swapped_raw =
+      this->is_legacy() ? (uint16_t) ((x[3] << 8) | x[2]) : (uint16_t) ((x[2] << 8) | x[3]);
   const float swapped = swapped_raw / 10.0f;
-  const bool configured_ok = as_configured >= 30.0f && as_configured <= 60.0f;
-  const bool swapped_ok = swapped >= 30.0f && swapped <= 60.0f;
-  if (!configured_ok && swapped_ok) {
-    this->byte_order_warned_ = true;
-    ESP_LOGW(TAG,
-             "Element target reads %.1f C with byte_order: %s, but %.1f C the other way round. "
-             "This radiator looks %s-endian: set byte_order: %s (substitution) and reflash.",
-             as_configured, this->is_big_endian() ? "big" : "little", swapped,
-             this->is_big_endian() ? "little" : "big", this->is_big_endian() ? "little" : "big");
+  if (!(as_configured >= 30.0f && as_configured <= 60.0f) && (swapped >= 30.0f && swapped <= 60.0f)) {
+    char evidence[96];
+    snprintf(evidence, sizeof(evidence), "Element target decodes to %.1f C, or %.1f C byte-swapped",
+             as_configured, swapped);
+    this->warn_protocol_(evidence);
+  }
+}
+
+void TermaMoa::check_mode_payload(const std::vector<uint8_t> &x) {
+  if (this->protocol_warned_ || x.empty())
+    return;
+  // Legacy units expose a 1-byte mode characteristic; modern ones a 4-byte one.
+  if (!this->is_legacy() && x.size() == 1) {
+    this->warn_protocol_("Mode characteristic is 1 byte (modern units send 4)");
+  } else if (this->is_legacy() && x.size() >= 4) {
+    this->warn_protocol_("Mode characteristic is 4 bytes (legacy units send 1)");
   }
 }
 

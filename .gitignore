@@ -12,3 +12,6 @@ logs/
 
 # OS cruft
 .DS_Store
+
+# Python bytecode (created when ESPHome loads the component)
+__pycache__/

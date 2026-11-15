@@ -11,9 +11,10 @@
 substitutions:
   device_name: terma-moa-blue
   radiator_mac: !secret terma_moa_blue__radiator_mac
-  # This unit reports its 16-bit values big-endian. Delete this line (or set
-  # "little") if yours shows sensible temperatures without it. See README "Byte order".
-  byte_order: big
+  # This unit speaks the older ("legacy") Terma protocol: big-endian values, a 1-byte
+  # mode, room/element modes 5/6, no timer. Delete this line if yours works without
+  # it - the logs warn if the setting looks wrong. See README "Protocol versions".
+  protocol: legacy
 
 esphome:
   name: ${device_name}
@@ -44,12 +45,22 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
 
+# Long form so `refresh` can be set: ESPHome otherwise caches git sources for a day,
+# so a fresh push to the repo isn't picked up. Raise to 1d once you're settled.
 external_components:
-  - source: github://bcdobbs/esphome-terma-blue-line@main
+  - source:
+      type: git
+      url: https://github.com/bcdobbs/esphome-terma-blue-line
+      ref: main
     components: [terma_moa]
+    refresh: 0s
 
 packages:
-  terma: github://bcdobbs/esphome-terma-blue-line/terma.package.yaml@main
+  terma:
+    url: https://github.com/bcdobbs/esphome-terma-blue-line
+    ref: main
+    files: [terma.package.yaml]
+    refresh: 0s
 
 # ---------------------------------------------------------------------------
 # Find your radiator's MAC

@@ -22,20 +22,23 @@ DEPENDENCIES = ["ble_client"]
 terma_moa_ns = cg.esphome_ns.namespace("terma_moa")
 TermaMoa = terma_moa_ns.class_("TermaMoa", cg.Component, ble_client.BLEClientNode)
 
-# Byte order of the radiator's 16-bit values (temperatures x10, timer seconds).
-# Most units are little-endian; some report big-endian. See README "Byte order".
-CONF_BYTE_ORDER = "byte_order"
-TermaByteOrder = terma_moa_ns.enum("TermaByteOrder", is_class=True)
-BYTE_ORDERS = {
-    "little": TermaByteOrder.LITTLE,
-    "big": TermaByteOrder.BIG,
+# Two protocol generations exist in the field (see README "Protocol versions"):
+#   modern - little-endian values, 4-byte mode characteristic, modes 0x11 / 0x21,
+#            native auto-off timer (the units this project was developed on).
+#   legacy - big-endian values, 1-byte mode characteristic, modes 5 (room) / 6
+#            (element), no timer (the protocol J1mbo's homebridge plugin targets).
+CONF_PROTOCOL = "protocol"
+TermaProtocol = terma_moa_ns.enum("TermaProtocol", is_class=True)
+PROTOCOLS = {
+    "modern": TermaProtocol.MODERN,
+    "legacy": TermaProtocol.LEGACY,
 }
 
 CONFIG_SCHEMA = (
     cv.Schema(
         {
             cv.GenerateID(): cv.declare_id(TermaMoa),
-            cv.Optional(CONF_BYTE_ORDER, default="little"): cv.enum(BYTE_ORDERS, lower=True),
+            cv.Optional(CONF_PROTOCOL, default="modern"): cv.enum(PROTOCOLS, lower=True),
         }
     )
     .extend(ble_client.BLE_CLIENT_SCHEMA)
@@ -47,4 +50,4 @@ async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
     await ble_client.register_ble_node(var, config)
-    cg.add(var.set_byte_order(config[CONF_BYTE_ORDER]))
+    cg.add(var.set_protocol(config[CONF_PROTOCOL]))
