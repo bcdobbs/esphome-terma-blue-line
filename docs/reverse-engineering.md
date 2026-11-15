@@ -44,7 +44,8 @@ characteristics are `d97352b1…b6`.
 ### Read a characteristic (log its raw bytes)
 
 The `ble_client` sensor with a `format_hex_pretty` lambda is the workhorse — it's
-the same pattern the main config already uses. Point it at a candidate UUID and
+the same pattern the main config already uses (the main config logs its raw payloads
+at `VERBOSE`, so raise `logger: level:` to see them). Point it at a candidate UUID and
 watch the logs:
 
 ```yaml
@@ -151,9 +152,11 @@ out.
   decodes to nonsense like 2995.3 °C is the giveaway. When a
   characteristic holds both a current and a target value, they're usually two
   `uint16`s back to back (bytes 0–1 and 2–3).
-- **The mode byte is a bitfield**, not an enum — decode bits rather than
-  memorising every combination. See the README's mode table for the observed
-  values.
+- **The mode byte looks like a bitfield** on `modern` units (e.g. `0x10` = room,
+  `0x20` = element, low bits = timer variants), which helps when you meet a new
+  value. The integration itself matches the exact observed values (see the README's
+  mode table and `mode_name()` in the component), because only those combinations
+  have been confirmed against real hardware. Unknown values show as `On (0xNN)`.
 - **Change one thing at a time** in the app, capture, and diff against a baseline.
   A single-variable change makes the responsible byte obvious.
 - **Cross-reference prior work** — J1mbo's

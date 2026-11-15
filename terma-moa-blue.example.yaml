@@ -7,7 +7,10 @@
 #      (Wi-Fi, api key, ota password, ap password, and radiator_mac).
 #   2. Set `board:` to your ESP32.
 #   3. Flash: `esphome run terma-moa-blue.example.yaml`
-# Pin @main to a released tag (e.g. @v1.0.0) for reproducible builds once tagged.
+#
+# Both git references below compile code from this repo into your firmware. `@main`
+# follows the latest commit; for reproducible builds that only change when you choose,
+# replace `main` in both with a release tag (e.g. `v1.0.0`) or a full commit SHA.
 
 substitutions:
   device_name: terma-moa-blue
@@ -52,9 +55,9 @@ captive_portal:
 
 # The terma_moa C++ component, pulled straight from this repo.
 external_components:
-  - source: github://kumalg/esphome-terma-blue-line@main
+  - source: github://bcdobbs/esphome-terma-blue-line@main
     components: [terma_moa]
 
 # All entities, the ble_client, the BLE stack, and the terma_moa: hub.
 packages:
-  terma: github://kumalg/esphome-terma-blue-line/terma.package.yaml@main
+  terma: github://bcdobbs/esphome-terma-blue-line/terma.package.yaml@main

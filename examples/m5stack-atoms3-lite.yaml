@@ -45,22 +45,24 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
 
-# Long form so `refresh` can be set: ESPHome otherwise caches git sources for a day,
-# so a fresh push to the repo isn't picked up. Raise to 1d once you're settled.
+# Long form so `ref` and `refresh` are explicit. Both sources compile code from the
+# repo into the firmware: for reproducible builds, set `ref` to a release tag or full
+# commit SHA instead of `main`. `refresh: 1d` re-checks git once a day; set it to 0s
+# temporarily while testing fresh pushes so every install pulls the latest commit.
 external_components:
   - source:
       type: git
       url: https://github.com/bcdobbs/esphome-terma-blue-line
       ref: main
     components: [terma_moa]
-    refresh: 0s
+    refresh: 1d
 
 packages:
   terma:
     url: https://github.com/bcdobbs/esphome-terma-blue-line
     ref: main
     files: [terma.package.yaml]
-    refresh: 0s
+    refresh: 1d
 
 # ---------------------------------------------------------------------------
 # Room sensor calibration (optional)
