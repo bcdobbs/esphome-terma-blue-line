@@ -75,7 +75,6 @@ class TermaMoa : public Component, public ble_client::BLEClientNode {
   TermaProtocol protocol_{TermaProtocol::MODERN};
   bool protocol_warned_{false};
 };
-};
 
 }  // namespace terma_moa
 }  // namespace esphome
