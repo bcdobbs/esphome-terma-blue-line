@@ -160,6 +160,53 @@ template:
                 data: { value: "{{ value }}" }
 ```
 
+## Room temperature: calibration and a Home Assistant thermostat
+
+The radiator's built-in room sensor sits in its controller, so it reads high, and
+more so once the element is hot (e.g. 24.9 °C cold vs 28.3 °C after heating, in the
+same room). Two things help.
+
+**Calibrate the reading** with an ESPHome filter in your device YAML. Each line is
+*what the radiator reports → what a trusted thermometer says*; take one pair with the
+rail off and cold and one after ~30 min of heating:
+
+```yaml
+sensor:
+  - id: !extend room_temp_raw
+    filters:
+      - calibrate_linear:
+          - 24.9 -> 21.5   # rail off and cold
+          - 28.3 -> 22.0   # rail on and hot
+```
+
+(A single `- offset: -3.0` works too, but won't track the heating error.) This only
+changes the value Home Assistant sees: in **Room** mode the radiator still regulates
+on its own uncorrected sensor.
+
+**Let Home Assistant do the room control** instead of the radiator's Room mode. Leave
+**Heat Mode** on **Element** and wrap the switch and the calibrated sensor in HA's
+built-in Generic Thermostat (Settings → Helpers → Generic thermostat, or YAML):
+
+```yaml
+climate:
+  - platform: generic_thermostat
+    name: Bathroom
+    heater: switch.terma_moa_blue_radiator_power
+    target_sensor: sensor.terma_moa_blue_radiator_room_sensor
+    target_temp: 22
+    min_temp: 15
+    max_temp: 26
+    cold_tolerance: 0.5
+    hot_tolerance: 0.5
+    min_cycle_duration:
+      minutes: 10   # avoid short-cycling; legacy units re-run off -> target -> mode on every start
+```
+
+You get a real thermostat entity (and a thermostat tile in Apple Home via the HomeKit
+Bridge). Because the sensor sits in the rail, it jumps when heating starts, so keep
+the cycle duration and tolerances. For better control, swap `target_sensor` for any
+separate room sensor away from the rail.
+
 ## Hardware
 
 - Any **ESP32** with Bluetooth LE. Developed on a **Seeed XIAO ESP32-C6**

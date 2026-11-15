@@ -63,6 +63,23 @@ packages:
     refresh: 0s
 
 # ---------------------------------------------------------------------------
+# Room sensor calibration (optional)
+# ---------------------------------------------------------------------------
+# The radiator's built-in room sensor sits in the controller and reads high,
+# especially while the element is hot. Each line is "radiator reads -> true value".
+# Take one reading with the rail off for an hour+ and one after 30 min heating,
+# against a thermometer at head height away from the rail, then uncomment.
+# This changes the value shown in Home Assistant only - in Room mode the radiator
+# still regulates on its own uncorrected sensor. See README "Room temperature".
+#
+# sensor:
+#   - id: !extend room_temp_raw
+#     filters:
+#       - calibrate_linear:
+#           - 24.9 -> 21.5   # rail off and cold   (replace with your readings)
+#           - 28.3 -> 22.0   # rail on and hot     (replace with your readings)
+
+# ---------------------------------------------------------------------------
 # Find your radiator's MAC
 # ---------------------------------------------------------------------------
 # 1. Put any placeholder in the radiator_mac secret (e.g. "00:00:00:00:00:00").
