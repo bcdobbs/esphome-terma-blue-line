@@ -1,0 +1,72 @@
+# Terma MOA Blue on an M5Stack AtomS3 Lite (ESP32-S3, 8 MB flash, USB-C, own case).
+# A working device config: copy it into ESPHome Builder and add the secrets below.
+#
+# Secrets used (ESPHome Builder > Secrets):
+#   terma_moa_blue__radiator_mac        the radiator's BLE MAC, e.g. "CC:22:37:10:DB:CE"
+#   terma_moa_blue__api_encryption_key  32-byte base64 key (also secures OTA, see below)
+#   wifi_ssid / wifi_password           2.4 GHz network - the ESP32 has no 5 GHz radio
+#
+# Don't know the MAC yet? Use the "Find your radiator's MAC" block at the bottom.
+
+substitutions:
+  device_name: terma-moa-blue
+  radiator_mac: !secret terma_moa_blue__radiator_mac
+  # This unit reports its 16-bit values big-endian. Delete this line (or set
+  # "little") if yours shows sensible temperatures without it. See README "Byte order".
+  byte_order: big
+
+esphome:
+  name: ${device_name}
+
+# Newer ESPHome selects the chip by variant rather than a PlatformIO board name.
+# The AtomS3 Lite is an ESP32-S3 - building for plain "esp32" boot-loops it with
+# "invalid header: 0xffffffff".
+esp32:
+  variant: esp32s3
+  flash_size: 8MB
+  framework:
+    type: esp-idf          # required by the terma_moa component
+    advanced:
+      flash_chip: generic  # suggested by ESPHome at boot to save IRAM
+
+logger:
+
+api:
+  encryption:
+    key: !secret terma_moa_blue__api_encryption_key
+
+# OTA uses the API key (Noise encryption) - no separate OTA password.
+ota:
+  - platform: esphome
+    encryption:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+external_components:
+  - source: github://bcdobbs/esphome-terma-blue-line@main
+    components: [terma_moa]
+
+packages:
+  terma: github://bcdobbs/esphome-terma-blue-line/terma.package.yaml@main
+
+# ---------------------------------------------------------------------------
+# Find your radiator's MAC
+# ---------------------------------------------------------------------------
+# 1. Put any placeholder in the radiator_mac secret (e.g. "00:00:00:00:00:00").
+# 2. Uncomment the block below and install.
+# 3. Close the Terma app / turn off phone Bluetooth (the radiator advertises only
+#    while nothing is connected), press the radiator's button to wake it, and watch
+#    the logs for:   [find_terma] Found 'MOA Blue TERMA' MAC: XX:XX:XX:XX:XX:XX
+# 4. Put that MAC in the secret, comment the block out again, put the radiator in
+#    pairing mode (long-press until the BLE light flashes) and install.
+#
+# esp32_ble_tracker:
+#   on_ble_advertise:
+#     - then:
+#         - lambda: |-
+#             if (x.get_name().find("TERMA") != std::string::npos) {
+#               ESP_LOGI("find_terma", "Found '%s' MAC: %s RSSI: %d",
+#                        x.get_name().c_str(), x.address_str().c_str(), x.get_rssi());
+#             }
