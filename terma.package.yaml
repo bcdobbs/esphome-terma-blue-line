@@ -51,7 +51,7 @@ ble_client:
       then:
         - logger.log:
             format: "Passkey notification received: %d"
-            args: ["passkey"]
+            args: ["(int) passkey"]
     on_disconnect:
       then:
         - logger.log: "BLE client disconnected!"
