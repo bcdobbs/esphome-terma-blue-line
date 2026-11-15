@@ -213,7 +213,8 @@ packages:
 
 1. **Create your secrets.** Copy `secrets.yaml.example` to `secrets.yaml` and fill
    in Wi-Fi, an API encryption key, an OTA password, an AP fallback password, and
-   your radiator's MAC (`radiator_mac`).
+   your radiator's MAC (`radiator_mac`). Don't know the MAC? See
+   [Finding your radiator's MAC](#finding-your-radiators-mac).
 2. **Set `board:`** to your ESP32. Leave `framework: esp-idf` — the component
    requires it.
 3. **Flash** with ESPHome (`esphome run terma-moa-blue.example.yaml`), or just
@@ -222,6 +223,62 @@ packages:
 Pin `@main` to a released tag (e.g. `@v1.0.0`) once the repo is tagged, for
 reproducible builds. To override the pairing PIN, add `passkey: "your-pin"` under
 `substitutions`.
+
+### Byte order
+
+Terma units don't all encode their 16-bit values (temperatures × 10, timer seconds)
+the same way. The units this was developed on are **little-endian**, which is the
+default. Others report the same fields **big-endian**. If yours is one of those,
+add this under `substitutions`:
+
+```yaml
+  byte_order: big
+```
+
+How to tell you need it:
+
+- The temperatures are nonsense: for example **Radiator Element Temperature** shows
+  `2995.3 °C` where the raw log line is `b2 element raw (4 bytes): 01.75.02.58`.
+  Read big-endian, that's 37.3 °C current and 60.0 °C target.
+- **Radiator Power** won't stay on. The target write arrives byte-swapped (45 °C
+  becomes ~4966 °C), the radiator ignores it, and the next poll flips the switch
+  back off.
+- The logs show a `terma_moa` warning that the element target only makes sense in
+  the other byte order. This check runs on every element read until it fires once.
+
+The setting applies to every read and write: room and element temperatures, both
+targets, and the timer countdown.
+
+A complete, tested config for an **M5Stack AtomS3 Lite** (ESP32-S3) is in
+[`examples/m5stack-atoms3-lite.yaml`](examples/m5stack-atoms3-lite.yaml). It uses
+`variant:` rather than `board:`, OTA secured by the API key, and `byte_order: big`.
+
+### Finding your radiator's MAC
+
+The MAC may be on a label on the element. If not, have the ESP find it. iPhones
+can't help here, because iOS hides Bluetooth MAC addresses.
+
+1. Put a placeholder in the `radiator_mac` secret (e.g. `"00:00:00:00:00:00"`) so the
+   config compiles.
+2. Add this to your device YAML (it's in the AtomS3 example, commented out) and
+   install:
+
+   ```yaml
+   esp32_ble_tracker:
+     on_ble_advertise:
+       - then:
+           - lambda: |-
+               if (x.get_name().find("TERMA") != std::string::npos) {
+                 ESP_LOGI("find_terma", "Found '%s' MAC: %s RSSI: %d",
+                          x.get_name().c_str(), x.address_str().c_str(), x.get_rssi());
+               }
+   ```
+
+3. Close the Terma app or turn off your phone's Bluetooth. The radiator stops
+   advertising while anything is connected. Press its button to wake it, then watch
+   the logs for `[find_terma] Found 'MOA Blue TERMA' MAC: XX:XX:XX:XX:XX:XX`.
+4. Put that MAC in the secret, remove the block, and install again with the radiator
+   in pairing mode (see below).
 
 ### First pairing
 
@@ -294,8 +351,9 @@ sequence. Values verified against a MOA Blue.
 | b3 | `d97352b3-…` | Operating mode (byte 0, a bitfield) |
 | b6 | `d97352b6-…` | Timer: remaining seconds (bytes 0–1), total seconds (bytes 2–3) |
 
-**Temperature encoding** — little-endian `uint16`, value ÷ 10 = °C. To write a
-target, put it in bytes 2–3 with bytes 0–1 zero:
+**Temperature encoding** — `uint16`, value ÷ 10 = °C, little-endian on most units
+but big-endian on some (see [Byte order](#byte-order); all examples below are
+little-endian). To write a target, put it in bytes 2–3 with bytes 0–1 zero:
 
 ```
 21.5 °C → 215 → 0xD7 0x00 → write {0x00, 0x00, 0xD7, 0x00}

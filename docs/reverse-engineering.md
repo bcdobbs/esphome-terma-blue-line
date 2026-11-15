@@ -146,7 +146,9 @@ out.
 
 ## Decoding tips
 
-- **Temperatures** are little-endian `uint16`, value ÷ 10 = °C. When a
+- **Temperatures** are `uint16`, value ÷ 10 = °C — little-endian on the units this
+  was developed on, big-endian on others (see the README's *Byte order*). A value
+  that decodes to nonsense like 2995.3 °C is the giveaway. When a
   characteristic holds both a current and a target value, they're usually two
   `uint16`s back to back (bytes 0–1 and 2–3).
 - **The mode byte is a bitfield**, not an enum — decode bits rather than

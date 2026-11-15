@@ -6,8 +6,11 @@
 # Substitution contract (provided by the consuming device file):
 #   radiator_mac  (required)  the radiator's BLE MAC (from secrets.yaml)
 #   passkey       (optional)  BLE pairing PIN; defaults to the Terma default below
+#   byte_order    (optional)  "little" (default) or "big" — how this radiator encodes
+#                             its 16-bit values. See README "Byte order".
 substitutions:
   passkey: "123456"
+  byte_order: little
 
 # Enable BLE with keyboard capability for PIN entry
 esp32_ble:
@@ -57,7 +60,9 @@ ble_client:
 # Terma MOA Blue helper component - automatically requests link encryption on
 # connect so the radiator will serve its (encrypted) characteristics.
 terma_moa:
+  id: terma_hub
   ble_client_id: terma_moa_ble_client
+  byte_order: ${byte_order}
 
 # Globals to store state
 globals:
@@ -110,9 +115,9 @@ sensor:
     lambda: |-
       ESP_LOGD("terma", "b1 room raw (%d bytes): %s", (int) x.size(), format_hex_pretty(x).c_str());
       if (x.size() >= 4) {
-        // Little-endian uint16, value / 10 = °C (verified Terma Blue Line protocol).
-        float current_room = (x[0] + x[1] * 256.0f) / 10.0f;
-        float target_room = (x[2] + x[3] * 256.0f) / 10.0f;
+        // uint16 in the configured byte order, value / 10 = °C.
+        float current_room = id(terma_hub).decode_u16(x, 0) / 10.0f;
+        float target_room = id(terma_hub).decode_u16(x, 2) / 10.0f;
         ESP_LOGD("terma", "Room - Current: %.1f°C, Target: %.1f°C", current_room, target_room);
         // Reflect the radiator's room target into the Room Target number, but only
         // while heating - when off, leave the number showing the user's pre-set value
@@ -143,9 +148,10 @@ sensor:
     lambda: |-
       ESP_LOGD("terma", "b2 element raw (%d bytes): %s", (int) x.size(), format_hex_pretty(x).c_str());
       if (x.size() >= 4) {
-        // Little-endian uint16, value / 10 = °C (verified Terma Blue Line protocol).
-        float current_heater = (x[0] + x[1] * 256.0f) / 10.0f;
-        float target_heater = (x[2] + x[3] * 256.0f) / 10.0f;
+        // uint16 in the configured byte order, value / 10 = °C.
+        id(terma_hub).check_element_byte_order(x);
+        float current_heater = id(terma_hub).decode_u16(x, 0) / 10.0f;
+        float target_heater = id(terma_hub).decode_u16(x, 2) / 10.0f;
         ESP_LOGD("terma", "Heater - Current: %.1f°C, Target: %.1f°C", current_heater, target_heater);
         // Reflect the radiator's element target into the Element Target number, but
         // only while heating - when off, leave the number showing the user's pre-set
@@ -211,8 +217,8 @@ sensor:
     icon: "mdi:timer-sand"
     lambda: |-
       if (x.size() >= 4) {
-        int remaining_s = x[0] + x[1] * 256;
-        int total_s = x[2] + x[3] * 256;
+        int remaining_s = id(terma_hub).decode_u16(x, 0);
+        int total_s = id(terma_hub).decode_u16(x, 2);
         // A running timer counts down; a stopped one leaves b6 frozen. Infer
         // "active" from whether the remaining value changes between reads.
         int prev = id(timer_prev_remaining);
@@ -297,7 +303,7 @@ select:
                       characteristic_uuid: "d97352b1-d19e-11e2-9e96-0800200c9a66"
                       value: !lambda |-
                         uint16_t v = (uint16_t)(id(room_target).state * 10.0f);
-                        return {0x00, 0x00, (uint8_t)(v & 0xFF), (uint8_t)(v >> 8)};
+                        return id(terma_hub).encode_u16_pair(0, v);
                 else:
                   - ble_client.ble_write:
                       id: terma_moa_ble_client
@@ -305,7 +311,7 @@ select:
                       characteristic_uuid: "d97352b2-d19e-11e2-9e96-0800200c9a66"
                       value: !lambda |-
                         uint16_t v = (uint16_t)(id(rail_target).state * 10.0f);
-                        return {0x00, 0x00, (uint8_t)(v & 0xFF), (uint8_t)(v >> 8)};
+                        return id(terma_hub).encode_u16_pair(0, v);
             - delay: 300ms
             - script.execute:
                 id: set_mode
@@ -335,10 +341,10 @@ number:
                 service_uuid: "d97352b0-d19e-11e2-9e96-0800200c9a66"
                 characteristic_uuid: "d97352b2-d19e-11e2-9e96-0800200c9a66"
                 value: !lambda |-
-                  // Element target -> b2, little-endian uint16 (°C * 10) in bytes 2-3.
+                  // Element target -> b2, uint16 (°C * 10) in bytes 2-3, configured byte order.
                   // Use x (the just-set value): .state lags until after set_action runs.
                   uint16_t v = (uint16_t)(x * 10.0f);
-                  return {0x00, 0x00, (uint8_t)(v & 0xFF), (uint8_t)(v >> 8)};
+                  return id(terma_hub).encode_u16_pair(0, v);
 
   # Room target (15-30C) - used when Heat Mode = Room.
   - platform: template
@@ -362,9 +368,9 @@ number:
                 service_uuid: "d97352b0-d19e-11e2-9e96-0800200c9a66"
                 characteristic_uuid: "d97352b1-d19e-11e2-9e96-0800200c9a66"
                 value: !lambda |-
-                  // Room target -> b1, little-endian uint16 (°C * 10) in bytes 2-3.
+                  // Room target -> b1, uint16 (°C * 10) in bytes 2-3, configured byte order.
                   uint16_t v = (uint16_t)(x * 10.0f);
-                  return {0x00, 0x00, (uint8_t)(v & 0xFF), (uint8_t)(v >> 8)};
+                  return id(terma_hub).encode_u16_pair(0, v);
 
   # How long the "Start Timer" button runs the bounded auto-off timer.
   - platform: template
@@ -395,7 +401,7 @@ script:
                 characteristic_uuid: "d97352b1-d19e-11e2-9e96-0800200c9a66"
                 value: !lambda |-
                   uint16_t v = (uint16_t)(id(room_target).state * 10.0f);
-                  return {0x00, 0x00, (uint8_t)(v & 0xFF), (uint8_t)(v >> 8)};
+                  return id(terma_hub).encode_u16_pair(0, v);
           else:
             - ble_client.ble_write:
                 id: terma_moa_ble_client
@@ -403,7 +409,7 @@ script:
                 characteristic_uuid: "d97352b2-d19e-11e2-9e96-0800200c9a66"
                 value: !lambda |-
                   uint16_t v = (uint16_t)(id(rail_target).state * 10.0f);
-                  return {0x00, 0x00, (uint8_t)(v & 0xFF), (uint8_t)(v >> 8)};
+                  return id(terma_hub).encode_u16_pair(0, v);
   # Write an operating-mode byte to b3.
   - id: set_mode
     parameters:
@@ -488,8 +494,7 @@ button:
                 characteristic_uuid: "d97352b6-d19e-11e2-9e96-0800200c9a66"
                 value: !lambda |-
                   uint16_t s = (uint16_t)(id(timer_minutes).state * 60.0f);
-                  return {(uint8_t)(s & 0xFF), (uint8_t)(s >> 8),
-                          (uint8_t)(s & 0xFF), (uint8_t)(s >> 8)};
+                  return id(terma_hub).encode_u16_pair(s, s);
             - delay: 400ms
             # 3) target temp (b1 room / b2 element)
             - script.execute: push_target

@@ -16,6 +16,10 @@ substitutions:
   board: esp32dev
   # Radiator BLE MAC — keep it in secrets.yaml (see secrets.yaml.example).
   radiator_mac: !secret radiator_mac
+  # How this radiator encodes 16-bit values: "little" (default) or "big". If the
+  # temperatures read as nonsense (e.g. 2995.3 °C) or the logs warn about byte order,
+  # set this to big. See README "Byte order".
+  # byte_order: big
 
 esphome:
   name: ${device_name}

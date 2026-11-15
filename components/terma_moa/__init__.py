@@ -22,10 +22,20 @@ DEPENDENCIES = ["ble_client"]
 terma_moa_ns = cg.esphome_ns.namespace("terma_moa")
 TermaMoa = terma_moa_ns.class_("TermaMoa", cg.Component, ble_client.BLEClientNode)
 
+# Byte order of the radiator's 16-bit values (temperatures x10, timer seconds).
+# Most units are little-endian; some report big-endian. See README "Byte order".
+CONF_BYTE_ORDER = "byte_order"
+TermaByteOrder = terma_moa_ns.enum("TermaByteOrder", is_class=True)
+BYTE_ORDERS = {
+    "little": TermaByteOrder.LITTLE,
+    "big": TermaByteOrder.BIG,
+}
+
 CONFIG_SCHEMA = (
     cv.Schema(
         {
             cv.GenerateID(): cv.declare_id(TermaMoa),
+            cv.Optional(CONF_BYTE_ORDER, default="little"): cv.enum(BYTE_ORDERS, lower=True),
         }
     )
     .extend(ble_client.BLE_CLIENT_SCHEMA)
@@ -37,3 +47,4 @@ async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
     await ble_client.register_ble_node(var, config)
+    cg.add(var.set_byte_order(config[CONF_BYTE_ORDER]))
