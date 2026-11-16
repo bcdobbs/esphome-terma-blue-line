@@ -10,6 +10,16 @@ heating, the built-in auto-off timer, and the exact operating mode. The ESP does
 **not** run its own thermostat loop; it drives the radiator the same way the
 Terma app does and reflects whatever the radiator reports back.
 
+There are two packages to choose from:
+
+- **Full** (`terma.package.yaml`) — everything above, over a persistent connection.
+- **On-demand** (`terma-on-demand.package.yaml`) — just on/off at a fixed element
+  temperature, connecting only to send each command. For when Home Assistant (e.g. a
+  Generic Thermostat with its own room sensor) decides when to heat. See
+  [On-demand mode](#on-demand-mode-minimal-package).
+
+Unless a section says otherwise, the setup steps below apply to both.
+
 ## Why this exists
 
 The Terma MOA Blue keeps its characteristics behind an **encrypted, bonded** BLE
@@ -19,8 +29,8 @@ and a naive setup can only talk to the radiator while it's held in pairing mode.
 
 This project ships a tiny external component (`terma_moa`) that requests link
 encryption the instant the GATT connection opens, so a persistent, unattended
-connection just works after the first pairing. It's built for the **ESP-IDF**
-framework.
+connection (or an on-demand one) just works after the first pairing. It's built for
+the **ESP-IDF** framework.
 
 ## Features
 
@@ -46,6 +56,10 @@ framework.
 
 ## Entities exposed
 
+These are the full package's entities. The on-demand package exposes only
+**Radiator Power**, **Radiator Status**, **Clear BLE Bonds** and **Restart** (see
+[On-demand mode](#on-demand-mode-minimal-package)).
+
 | Entity | Type | Notes |
 |---|---|---|
 | Radiator Element Temperature | sensor (°C) | Current element temperature |
@@ -64,6 +78,8 @@ framework.
 | Clear BLE Bonds / Restart | button (diagnostic) | Re-pairing / reboot |
 
 ## Optional: one adaptive control in Home Assistant
+
+*Full package only.*
 
 The integration deliberately exposes **Heat Mode** plus **separate Element/Room
 target** numbers, because an ESPHome entity's `min`/`max`/`step` are fixed when it
@@ -167,6 +183,9 @@ template:
 ```
 
 ## Room temperature: calibration and a Home Assistant thermostat
+
+*Full package.* If you have a separate room sensor and want Home Assistant to do all
+the control, the [on-demand package](#on-demand-mode-minimal-package) is simpler.
 
 The radiator's built-in room sensor sits in its controller, so it reads high, and
 more so once the element is hot (e.g. 24.9 °C cold vs 28.3 °C after heating, in the
@@ -335,8 +354,9 @@ that.
   `board:` to match yours.
 - A **Terma Blue Line** BLE radiator / heating element (MOA Blue confirmed).
 
-No extra wiring or sensors are needed — the radiator provides its own
-temperatures.
+No extra wiring is needed. The full package uses the radiator's own temperature
+sensors; the on-demand package needs a room temperature sensor in Home Assistant for
+the thermostat (any kind - Zigbee, Matter, Thread, …), ideally away from the rail.
 
 ## Installation
 
@@ -388,6 +408,10 @@ packages:
 3. **Flash** with ESPHome (`esphome run terma-moa-blue.example.yaml`), or just
    Install from ESPHome Builder.
 
+**For the on-demand package**, use `terma-on-demand.package.yaml` in `packages:`
+instead (and optionally set `element_temp`). A complete config is in
+[`examples/m5stack-atoms3-lite-on-demand.yaml`](examples/m5stack-atoms3-lite-on-demand.yaml).
+
 **Pin the version.** Both git references compile code from this repo straight into
 your firmware, and `@main` follows whatever the latest commit is. For reproducible
 builds that only change when you decide, replace `main` in both with a release tag
@@ -429,12 +453,15 @@ Signs that your radiator is `legacy`:
   poll flips the switch back.
 - Pressing the radiator's own button gives `Operating mode: 0x06` (element) or `0x05`
   (room).
+- On the **on-demand** package (no temperature entities): every command ends in
+  `Radiator reports mode 0x.. - not what was asked` and retries, and Radiator Status
+  stays on `Retrying on` / `Retrying off`.
 
 On `legacy`, the integration follows J1mbo's safeguard: these units can end up with a
 **doubled target** if switched straight between room and element mode, so every
 change goes **off → target → mode** and is then read back. If a read-back target is
 above the radiator's maximum (30 °C room, 60 °C element), it switches the radiator
-off and logs an error. **Start Timer** / **Stop Timer** only log a warning on `legacy`
+off and logs an error. (The on-demand package does the same, on every unit.) **Start Timer** / **Stop Timer** only log a warning on `legacy`
 units, **Timer Active** stays off, and **Timer Remaining** is never read.
 
 On `modern` units, changing **Heat Mode** while a timer is running switches the
@@ -467,6 +494,10 @@ can't help here, because iOS hides Bluetooth MAC addresses.
                }
    ```
 
+   On the **on-demand** package the ESP only scans for the first 5 minutes after
+   boot, so do the next step within 5 minutes of installing (or restart it to try
+   again).
+
 3. Close the Terma app or turn off your phone's Bluetooth. The radiator stops
    advertising while anything is connected. Press its button to wake it, then watch
    the logs for `[find_terma] Found 'MOA Blue TERMA' MAC: XX:XX:XX:XX:XX:XX`.
@@ -479,13 +510,15 @@ The radiator only bonds when it's in **pairing mode**:
 
 1. Put the radiator into Bluetooth pairing mode (see the Terma manual — usually a
    long-press until the BLE indicator flashes).
-2. Boot the ESP. It connects and negotiates encryption using PIN **`123456`**.
-   The PIN is fixed by the radiator itself (the Terma Blue Line default), so there's
-   nothing to configure.
-3. Once bonded, subsequent reconnects are automatic — no pairing mode needed.
+2. Boot the ESP while it's flashing. It connects and negotiates encryption using PIN
+   **`123456`**. The PIN is fixed by the radiator itself (the Terma Blue Line
+   default), so there's nothing to configure. (The on-demand package connects at boot
+   too, to switch the radiator off; if pairing mode ends first, put it back in
+   pairing mode and toggle **Radiator Power**.)
+3. Once bonded, later connections need no pairing mode.
 
-To re-pair (e.g. after replacing the ESP), press **Clear BLE Bonds**, restart the
-ESP, and put the radiator back in pairing mode.
+To re-pair (e.g. after replacing the ESP), press **Clear BLE Bonds**, put the radiator
+back in pairing mode, and restart the ESP.
 
 ### Local development (for contributors)
 
@@ -527,7 +560,8 @@ packages:
 ```
 
 `esphome run dev.yaml` then picks up local edits to both `components/` and
-`terma.package.yaml` immediately.
+`terma.package.yaml` immediately. To work on the on-demand package, include
+`terma-on-demand.package.yaml` instead.
 
 ## Protocol reference
 
@@ -578,8 +612,9 @@ unencrypted link. ESPHome does not initiate encryption on its own, so the
 `terma_moa` component calls `esp_ble_set_encryption` on `ESP_GATTC_OPEN_EVT`. This
 is the whole reason the component exists. It then waits for both the pairing result
 (`ESP_GAP_BLE_AUTH_CMPL_EVT`) and service discovery before reporting the link ready:
-`id(terma_hub).is_ready()` gates every write and every polled read, and its
-`on_ready:` trigger refreshes the status. (ESPHome itself reads each characteristic
+`id(terma_hub).is_ready()` gates every write and every polled read (the on-demand
+package waits on it after each connect), and its `on_ready:` trigger refreshes the
+status. (ESPHome itself reads each characteristic
 once right after service discovery.)
 
 ## Extending it (new models / features)
