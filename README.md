@@ -40,6 +40,9 @@ framework.
   boot. Nothing is read or written until the link is actually encrypted.
 - **Two protocol generations** — `modern` (default) and `legacy` units are both
   supported via one setting.
+- **On-demand mode** — a minimal alternative package: one on/off switch at full
+  power, connecting over Bluetooth only to send each command (see
+  [On-demand mode](#on-demand-mode-minimal-package)).
 
 ## Entities exposed
 
@@ -209,6 +212,52 @@ You get a real thermostat entity (and a thermostat tile in Apple Home via the Ho
 Bridge). Because the sensor sits in the rail, it jumps when heating starts, so keep
 the cycle duration and tolerances. For better control, swap `target_sensor` for any
 separate room sensor away from the rail.
+
+## On-demand mode (minimal package)
+
+If Home Assistant makes all the decisions (a Generic Thermostat with its own room
+sensor, say), you don't need any of the radiator's modes, targets or timers - just on
+and off. `terma-on-demand.package.yaml` does only that, and **doesn't hold a Bluetooth
+connection**: the ESP connects to send a command, checks it took, and disconnects.
+That leaves the radiator free between commands (the phone app works again) and stops
+the high-pitched whine some units make while something is connected.
+
+Use it in place of the full package:
+
+```yaml
+packages:
+  terma:
+    url: https://github.com/bcdobbs/esphome-terma-blue-line
+    ref: main
+    files: [terma-on-demand.package.yaml]
+```
+
+`examples/m5stack-atoms3-lite-on-demand.yaml` is a complete device config.
+
+| Entity | Notes |
+|---|---|
+| Radiator Power (switch) | On = element mode at `element_temp` (default 60 °C, full power); off = off |
+| Radiator Status (text) | `On` / `Off` once confirmed, `Switching on`, `Retrying on`, or a fault |
+| Clear BLE Bonds / Restart | diagnostic buttons |
+
+How it behaves:
+
+- **Every command** connects, switches off, (for on) writes the element target and
+  element mode, reads the mode back to confirm, then disconnects - a few seconds.
+- **Failures are retried** 3 times, then once a minute until confirmed. The switch
+  shows what was asked for; Radiator Status shows what was confirmed.
+- **Safety:** if the radiator reports an element target above 60 °C after switching on
+  (the legacy doubled-target fault), it is switched straight off and the status says so.
+- **On boot** the radiator is switched off. A Generic Thermostat turns it back on at its
+  next sensor update if it still needs heat.
+- **The radiator's own buttons** aren't noticed until the next command. A Generic
+  Thermostat's `keep_alive` option re-sends the current state periodically if you want
+  that corrected - each re-send is one short connection.
+- Keep a `min_cycle_duration` on the thermostat (e.g. 10 min) so it doesn't connect
+  more often than it needs to.
+- Switching from the full package: delete any `!extend room_temp_raw` calibration
+  block from your device YAML (that sensor no longer exists), and remove the old,
+  now-unavailable entities in Home Assistant. The bond is kept, so no re-pairing.
 
 ## Hardware
 

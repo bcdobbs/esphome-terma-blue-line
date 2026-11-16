@@ -1,0 +1,253 @@
+# terma-on-demand.package.yaml - a minimal "on/off at full power" Terma package.
+#
+# An alternative to terma.package.yaml for when something else (e.g. a Home Assistant
+# Generic Thermostat with its own room sensor) decides when to heat. The ESP does NOT
+# hold a Bluetooth connection: it connects only to switch the radiator, then lets go.
+# That keeps the radiator free between commands (and quiet - some units whine while a
+# phone or ESP is connected).
+#
+#   Radiator Power ON  -> connect -> off -> element target 60 C -> element mode
+#                         -> read back and check -> disconnect
+#   Radiator Power OFF -> connect -> off -> read back and check -> disconnect
+#
+# A failed command is retried 3 times straight away, then once a minute until it works.
+# The switch shows what was asked for; Radiator Status shows what was confirmed.
+# Changes made on the radiator's own buttons are not seen until the next command.
+#
+# Substitution contract (provided by the consuming device file):
+#   radiator_mac  (required)  the radiator's BLE MAC (from secrets.yaml)
+#   protocol      (optional)  "modern" (default) or "legacy" - see README "Protocol versions"
+#   element_temp  (optional)  element target while on, 30-60 C (default 60 = full power)
+substitutions:
+  protocol: modern
+  element_temp: "60"
+
+esp32_ble:
+  io_capability: keyboard_only
+
+# Needed by ble_client. Nothing here relies on scanning: connections are made
+# directly to the MAC, so one scan at boot is enough.
+esp32_ble_tracker:
+  scan_parameters:
+    continuous: false
+
+ble_client:
+  - mac_address: ${radiator_mac}
+    id: terma_moa_ble_client
+    auto_connect: false   # connect only when a command needs it
+    on_passkey_request:
+      then:
+        - ble_client.passkey_reply:
+            id: terma_moa_ble_client
+            passkey: 123456
+
+# Requests link encryption on connect (the radiator only talks over an encrypted,
+# bonded link) and provides the protocol helpers used below.
+terma_moa:
+  id: terma_hub
+  ble_client_id: terma_moa_ble_client
+  protocol: ${protocol}
+
+globals:
+  - id: pending        # a command is still to be confirmed
+    type: bool
+    initial_value: "false"
+  - id: fault          # safety cut-out fired; stop retrying
+    type: bool
+    initial_value: "false"
+  - id: attempt
+    type: int
+    initial_value: "0"
+  - id: read_mode      # last mode byte read back, -1 = no fresh read
+    type: int
+    initial_value: "-1"
+  - id: read_target    # last element target read back (C), NAN = no fresh read
+    type: float
+    initial_value: "NAN"
+
+# Read-back only: polled by the apply script, never on a timer. Internal because the
+# values are only fresh at the moment of a command.
+sensor:
+  - platform: ble_client
+    type: characteristic
+    ble_client_id: terma_moa_ble_client
+    id: mode_raw
+    internal: true
+    service_uuid: "d97352b0-d19e-11e2-9e96-0800200c9a66"
+    characteristic_uuid: "d97352b3-d19e-11e2-9e96-0800200c9a66"
+    update_interval: never
+    lambda: |-
+      id(terma_hub).check_mode_payload(x);
+      if (x.empty()) return NAN;
+      id(read_mode) = x[0];
+      return (float) x[0];
+
+  - platform: ble_client
+    type: characteristic
+    ble_client_id: terma_moa_ble_client
+    id: element_raw
+    internal: true
+    service_uuid: "d97352b0-d19e-11e2-9e96-0800200c9a66"
+    characteristic_uuid: "d97352b2-d19e-11e2-9e96-0800200c9a66"
+    update_interval: never
+    lambda: |-
+      if (x.size() < 4) return NAN;
+      id(terma_hub).check_element_payload(x);
+      id(read_target) = id(terma_hub).decode_u16(x, 2) / 10.0f;
+      return id(terma_hub).decode_u16(x, 0) / 10.0f;
+
+script:
+  # Write a mode byte to b3.
+  - id: write_mode
+    parameters:
+      m: int
+    then:
+      - ble_client.ble_write:
+          id: terma_moa_ble_client
+          service_uuid: "d97352b0-d19e-11e2-9e96-0800200c9a66"
+          characteristic_uuid: "d97352b3-d19e-11e2-9e96-0800200c9a66"
+          value: !lambda "return id(terma_hub).encode_mode(m);"
+
+  # Connect, set the radiator on or off, check it took, disconnect. mode: restart -
+  # a newer command replaces one still in progress (and reuses its connection).
+  - id: apply_power
+    mode: restart
+    parameters:
+      heat: bool
+    then:
+      - globals.set: { id: pending, value: "true" }
+      - globals.set: { id: fault, value: "false" }
+      - globals.set: { id: attempt, value: "0" }
+      - text_sensor.template.publish:
+          id: radiator_status
+          state: !lambda 'return heat ? "Switching on" : "Switching off";'
+      - while:
+          condition:
+            lambda: "return id(pending) && id(attempt) < 3;"
+          then:
+            - lambda: |-
+                id(attempt) += 1;
+                ESP_LOGI("terma", "Turning radiator %s (attempt %d)", heat ? "ON" : "OFF", id(attempt));
+                id(terma_moa_ble_client).connect();
+            - wait_until:
+                condition:
+                  lambda: "return id(terma_hub).is_ready();"
+                timeout: 20s
+            - if:
+                condition:
+                  lambda: "return id(terma_hub).is_ready();"
+                then:
+                  # Always via off first: legacy units can double the target if the
+                  # mode is changed directly (see README "Protocol versions").
+                  - script.execute: { id: write_mode, m: 0 }
+                  - script.wait: write_mode
+                  - if:
+                      condition:
+                        lambda: "return heat;"
+                      then:
+                        - delay: 500ms
+                        - ble_client.ble_write:
+                            id: terma_moa_ble_client
+                            service_uuid: "d97352b0-d19e-11e2-9e96-0800200c9a66"
+                            characteristic_uuid: "d97352b2-d19e-11e2-9e96-0800200c9a66"
+                            value: !lambda "return id(terma_hub).encode_target(false, ${element_temp});"
+                        - delay: 500ms
+                        - script.execute:
+                            id: write_mode
+                            m: !lambda "return id(terma_hub).mode_manual(false);"
+                        - script.wait: write_mode
+                  # Read back what the radiator now reports.
+                  - delay: 1s
+                  - lambda: |-
+                      id(read_mode) = -1;
+                      id(read_target) = NAN;
+                  - component.update: mode_raw
+                  - component.update: element_raw
+                  - wait_until:
+                      condition:
+                        lambda: "return id(read_mode) >= 0 && !std::isnan(id(read_target));"
+                      timeout: 5s
+                  - lambda: |-
+                      int m = id(read_mode);
+                      float t = id(read_target);
+                      if (m < 0) {
+                        ESP_LOGW("terma", "No read-back from the radiator");
+                      } else if (heat && t > 60.5f) {
+                        // Safety net: never leave it heating with an out-of-range target.
+                        ESP_LOGE("terma", "Element target read back as %.1f C - switching off", t);
+                        id(write_mode).execute(0);
+                        id(fault) = true;
+                        id(pending) = false;
+                      } else if (heat ? id(terma_hub).is_element_mode(m) : !id(terma_hub).is_heating(m)) {
+                        id(pending) = false;
+                        ESP_LOGI("terma", "Confirmed %s (mode 0x%02X, target %.1f C)", heat ? "ON" : "OFF", m, t);
+                      } else {
+                        ESP_LOGW("terma", "Radiator reports mode 0x%02X - not what was asked", m);
+                      }
+                  - script.wait: write_mode
+                else:
+                  - logger.log:
+                      level: WARN
+                      format: "Could not connect to the radiator"
+            - lambda: "id(terma_moa_ble_client).disconnect();"
+            - wait_until:   # fully closed, so the next connect isn't refused
+                condition:
+                  lambda: "return id(terma_moa_ble_client).state() == esp32_ble_tracker::ClientState::IDLE;"
+                timeout: 5s
+            - if:
+                condition:
+                  lambda: "return id(pending) && id(attempt) < 3;"
+                then:
+                  - delay: 5s
+      - text_sensor.template.publish:
+          id: radiator_status
+          state: !lambda |-
+            if (id(fault)) return "Fault - target out of range, switched off";
+            if (id(pending)) return heat ? "Retrying on" : "Retrying off";
+            return heat ? "On" : "Off";
+
+# Keep retrying an unconfirmed command once a minute.
+interval:
+  - interval: 60s
+    then:
+      - if:
+          condition:
+            lambda: "return id(pending) && !id(apply_power).is_running();"
+          then:
+            - script.execute:
+                id: apply_power
+                heat: !lambda "return id(power_switch).state;"
+
+switch:
+  - platform: template
+    name: "Radiator Power"
+    id: power_switch
+    icon: "mdi:radiator"
+    optimistic: true
+    # On boot, make sure the radiator is off; a thermostat will turn it back on if needed.
+    restore_mode: ALWAYS_OFF
+    turn_on_action:
+      - script.execute: { id: apply_power, heat: true }
+    turn_off_action:
+      - script.execute: { id: apply_power, heat: false }
+
+text_sensor:
+  - platform: template
+    name: "Radiator Status"
+    id: radiator_status
+    icon: "mdi:information"
+    update_interval: never
+
+button:
+  - platform: template
+    name: "Clear BLE Bonds"
+    icon: "mdi:bluetooth-off"
+    entity_category: diagnostic
+    on_press:
+      - ble_client.remove_bond:
+          id: terma_moa_ble_client
+      - logger.log: "BLE bond cleared - put the radiator in pairing mode and switch it on/off to re-pair"
+
+  - platform: restart
+    name: "Restart"
+    entity_category: diagnostic
