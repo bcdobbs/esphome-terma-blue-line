@@ -272,11 +272,8 @@ How it behaves:
   (the legacy doubled-target fault), it is switched straight off and the status says so.
 - **On boot** the radiator is switched off. A Generic Thermostat turns it back on at its
   next sensor update if it still needs heat.
-- **The radiator's own buttons** aren't noticed until the next command. A Generic
-  Thermostat's `keep_alive` option re-sends the current state periodically if you want
-  that corrected - each re-send is one short connection.
-- Keep a `min_cycle_duration` on the thermostat (e.g. 10 min) so it doesn't connect
-  more often than it needs to.
+- **The radiator's own buttons** aren't noticed until the next command - see
+  [Recommended thermostat setup](#recommended-thermostat-setup) below.
 - Switching from the full package: delete any `!extend room_temp_raw` calibration
   block from your device YAML (that sensor no longer exists). The bond is kept, so no
   re-pairing. **Radiator Power**, **Radiator Status**, **Clear BLE Bonds** and
@@ -285,6 +282,51 @@ How it behaves:
   thermostat's sensor, dashboards, automations, HomeKit Bridge) to something else,
   then delete them under Settings → Entities (a Home Assistant restart may be needed
   before Delete is enabled).
+
+### Recommended thermostat setup
+
+Pair the package with Home Assistant's **Generic Thermostat** (Settings → Helpers →
+Create helper → Generic thermostat) and a room sensor **away from the rail**:
+
+| Setting | Value | Why |
+|---|---|---|
+| Heater | **Radiator Power** | |
+| Temperature sensor | your room sensor | the radiator's built-in one reads high and isn't exposed here |
+| Cold / hot tolerance | 0.5 | stops it switching on every 0.1 °C wobble |
+| Minimum cycle duration | 10 min | limits how often the ESP connects |
+| **Keep alive** | **30 min** | corrects presses on the radiator's own buttons (below) |
+
+Or in YAML:
+
+```yaml
+climate:
+  - platform: generic_thermostat
+    name: Bathroom
+    heater: switch.terma_moa_blue_radiator_power
+    target_sensor: sensor.bathroom_temperature   # your room sensor
+    target_temp: 22
+    cold_tolerance: 0.5
+    hot_tolerance: 0.5
+    min_cycle_duration: { minutes: 10 }
+    keep_alive: { minutes: 30 }
+```
+
+**Why keep alive matters.** The ESP doesn't hold a connection, so it can't see the
+radiator's own buttons. If someone switches the radiator on by hand, Home Assistant
+still thinks it's off - and when the room passes the target, the thermostat won't send
+"off", because as far as it knows the heater is already off. The radiator would keep
+heating until the thermostat next turns it on and off itself. Keep alive makes the
+thermostat re-send its current on/off state on a schedule, so a manual change is
+corrected within that interval.
+
+Each re-send is one short connection (a few seconds). If your radiator whines while
+connected and that's noticeable, lengthen the interval - 60 min is a reasonable
+compromise.
+
+**Not covered:** if Home Assistant itself goes down while the radiator is on, it stays
+on at `element_temp` until Home Assistant returns - the same as leaving it on from its
+own button. The radiator still regulates its element, so it never runs hotter than
+that.
 
 ## Hardware
 
