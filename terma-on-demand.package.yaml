@@ -1,7 +1,7 @@
-# terma-on-demand.package.yaml - a minimal "on/off at full power" Terma package.
+# terma-on-demand.package.yaml - on/off control of a Terma Blue Line element.
 #
-# An alternative to terma.package.yaml for when something else (e.g. a Home Assistant
-# Generic Thermostat with its own room sensor) decides when to heat. The ESP does NOT
+# For when Home Assistant (e.g. a Generic Thermostat with its own room sensor)
+# decides when to heat. The ESP does NOT
 # hold a Bluetooth connection: it connects only to switch the radiator, then lets go.
 # That keeps the radiator free between commands (and quiet - some units whine while a
 # phone or ESP is connected).
@@ -142,7 +142,7 @@ script:
           id: terma_moa_ble_client
           service_uuid: "d97352b0-d19e-11e2-9e96-0800200c9a66"
           characteristic_uuid: "d97352b2-d19e-11e2-9e96-0800200c9a66"
-          value: !lambda "return id(terma_hub).encode_target(false, t);"
+          value: !lambda "return id(terma_hub).encode_element_target(t);"
 
   # Read the mode (b3) and element target (b2) into read_mode / read_target.
   # read_mode stays -1 if no answer arrives within 5 s.
@@ -199,7 +199,7 @@ script:
                   - lambda: |-
                       int m = id(read_mode);
                       float t = id(read_target);
-                      // The target actually sent (encode_target clamps to 30-60 C).
+                      // The target actually sent (encode_element_target clamps to 30-60 C).
                       float want = std::min(60.0f, std::max(30.0f, (float) ${element_temp}));
                       bool as_asked = m >= 0 &&
                           (heat ? id(terma_hub).is_element_mode(m) && fabsf(t - want) < 0.05f
@@ -230,7 +230,7 @@ script:
                               - delay: 500ms
                               - script.execute:
                                   id: write_mode
-                                  m: !lambda "return id(terma_hub).mode_manual(false);"
+                                  m: !lambda "return id(terma_hub).mode_element();"
                               - script.wait: write_mode
                         # Read back what the radiator now reports.
                         - delay: 1s
