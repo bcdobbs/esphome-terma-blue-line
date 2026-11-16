@@ -271,7 +271,8 @@ back in pairing mode, and restart the ESP.
 
 Earlier versions of this repo (and [kumalg's upstream](https://github.com/kumalg/esphome-terma-blue-line))
 had a full package with room/element modes, targets and timers over a persistent
-connection. To switch: point `packages:` at `terma-on-demand.package.yaml` and delete
+connection. The last of them is tag [`v1.0.0`](https://github.com/bcdobbs/esphome-terma-blue-line/tree/v1.0.0)
+(also the `full-package` branch); point both `ref:` lines at it to keep using it. To switch: point `packages:` at `terma-on-demand.package.yaml` and delete
 any `!extend room_temp_raw` calibration block from your device YAML. The bond is kept,
 so no re-pairing.
 
