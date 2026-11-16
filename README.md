@@ -234,6 +234,28 @@ packages:
 
 `examples/m5stack-atoms3-lite-on-demand.yaml` is a complete device config.
 
+### Setting the element temperature
+
+The element runs at 60 °C (full power) while on. To run it cooler, set the
+`element_temp` substitution in your device YAML:
+
+```yaml
+substitutions:
+  element_temp: "52.5"
+```
+
+| `element_temp` | Radiator button level |
+|---|---|
+| `"30"` | 1 (lowest) |
+| `"37.5"` | 2 |
+| `"45"` | 3 |
+| `"52.5"` | 4 |
+| `"60"` | 5 - full power (default) |
+
+Any value from 30 to 60 works (it's sent to 0.1 °C); values outside that range are
+clamped to 30 or 60. The five button levels are the values the radiator itself uses,
+so they're the safest choice.
+
 | Entity | Notes |
 |---|---|
 | Radiator Power (switch) | On = element mode at `element_temp` (default 60 °C, full power); off = off |

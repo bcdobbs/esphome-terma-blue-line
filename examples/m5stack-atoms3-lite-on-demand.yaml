@@ -5,6 +5,9 @@
 # (60 C) or off. The ESP connects over Bluetooth only to send a command, then
 # disconnects. See README "On-demand mode".
 #
+# While testing before the on-demand branch is merged, set both `ref:` lines below
+# to `on-demand` (and `refresh: 0s` to pick up new pushes immediately).
+#
 # Secrets used (ESPHome Builder > Secrets):
 #   terma_moa_blue__radiator_mac        the radiator's BLE MAC, e.g. "CC:22:37:10:DB:CE"
 #   terma_moa_blue__api_encryption_key  32-byte base64 key (also secures OTA)
@@ -14,7 +17,10 @@ substitutions:
   device_name: terma-moa-blue
   radiator_mac: !secret terma_moa_blue__radiator_mac
   protocol: legacy        # delete if your radiator uses the modern protocol
-  # element_temp: "60"    # element target while on, 30-60 C (default 60 = full power)
+  # Element temperature while on. The radiator's 5 button levels:
+  #   "30" | "37.5" | "45" | "52.5" | "60" (full power, the default)
+  # Any value from 30 to 60 works; values outside that range are clamped.
+  element_temp: "60"
 
 esphome:
   name: ${device_name}

@@ -17,7 +17,9 @@
 # Substitution contract (provided by the consuming device file):
 #   radiator_mac  (required)  the radiator's BLE MAC (from secrets.yaml)
 #   protocol      (optional)  "modern" (default) or "legacy" - see README "Protocol versions"
-#   element_temp  (optional)  element target while on, 30-60 C (default 60 = full power)
+#   element_temp  (optional)  element target while on, 30-60 C (default 60 = full power).
+#                             The radiator's 5 button levels are 30 / 37.5 / 45 / 52.5 / 60;
+#                             other values are accepted, out-of-range ones clamped.
 substitutions:
   protocol: modern
   element_temp: "60"
