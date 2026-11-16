@@ -278,8 +278,13 @@ How it behaves:
 - Keep a `min_cycle_duration` on the thermostat (e.g. 10 min) so it doesn't connect
   more often than it needs to.
 - Switching from the full package: delete any `!extend room_temp_raw` calibration
-  block from your device YAML (that sensor no longer exists), and remove the old,
-  now-unavailable entities in Home Assistant. The bond is kept, so no re-pairing.
+  block from your device YAML (that sensor no longer exists). The bond is kept, so no
+  re-pairing. **Radiator Power**, **Radiator Status**, **Clear BLE Bonds** and
+  **Restart** keep their entity IDs. Everything else the full package exposed goes
+  unavailable in Home Assistant: first move anything that uses those entities (a
+  thermostat's sensor, dashboards, automations, HomeKit Bridge) to something else,
+  then delete them under Settings → Entities (a Home Assistant restart may be needed
+  before Delete is enabled).
 
 ## Hardware
 

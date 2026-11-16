@@ -67,6 +67,13 @@ globals:
     type: float
     initial_value: "NAN"
 
+# The read-back sensors log a warning on every disconnect, and their automatic read on
+# connect can fail before the link is encrypted. Both are expected here - the apply
+# script checks the read-back itself - so only show their errors.
+logger:
+  logs:
+    ble_sensor: ERROR
+
 # Read-back only: polled by the apply script, never on a timer. Internal because the
 # values are only fresh at the moment of a command.
 sensor:
@@ -99,8 +106,15 @@ sensor:
       return id(terma_hub).decode_u16(x, 0) / 10.0f;
 
 script:
+  # BLE writes live in their own scripts, which apply_power runs with script.wait.
+  # If the link drops mid-write, ESPHome abandons the rest of the write's action
+  # chain without telling the enclosing if/while, so a write inline in apply_power
+  # would leave it stuck "running". Here only the helper ends, and apply_power
+  # carries on (and retries). Queued so a write is never skipped.
+  #
   # Write a mode byte to b3.
   - id: write_mode
+    mode: queued
     parameters:
       m: int
     then:
@@ -109,6 +123,18 @@ script:
           service_uuid: "d97352b0-d19e-11e2-9e96-0800200c9a66"
           characteristic_uuid: "d97352b3-d19e-11e2-9e96-0800200c9a66"
           value: !lambda "return id(terma_hub).encode_mode(m);"
+
+  # Write the element target (C) to b2.
+  - id: write_target
+    mode: queued
+    parameters:
+      t: float
+    then:
+      - ble_client.ble_write:
+          id: terma_moa_ble_client
+          service_uuid: "d97352b0-d19e-11e2-9e96-0800200c9a66"
+          characteristic_uuid: "d97352b2-d19e-11e2-9e96-0800200c9a66"
+          value: !lambda "return id(terma_hub).encode_target(false, t);"
 
   # Connect, set the radiator on or off, check it took, disconnect. mode: restart -
   # a newer command replaces one still in progress (and reuses its connection).
@@ -123,6 +149,12 @@ script:
       - text_sensor.template.publish:
           id: radiator_status
           state: !lambda 'return heat ? "Switching on" : "Switching off";'
+      # Right after boot the BLE stack is still registering; connecting before then
+      # is refused, so wait for it rather than burning an attempt.
+      - wait_until:
+          condition:
+            lambda: "return id(terma_moa_ble_client).get_gattc_if() != ESP_GATT_IF_NONE;"
+          timeout: 30s
       - while:
           condition:
             lambda: "return id(pending) && id(attempt) < 3;"
@@ -148,11 +180,8 @@ script:
                         lambda: "return heat;"
                       then:
                         - delay: 500ms
-                        - ble_client.ble_write:
-                            id: terma_moa_ble_client
-                            service_uuid: "d97352b0-d19e-11e2-9e96-0800200c9a66"
-                            characteristic_uuid: "d97352b2-d19e-11e2-9e96-0800200c9a66"
-                            value: !lambda "return id(terma_hub).encode_target(false, ${element_temp});"
+                        - script.execute: { id: write_target, t: "${element_temp}" }
+                        - script.wait: write_target
                         - delay: 500ms
                         - script.execute:
                             id: write_mode
@@ -180,6 +209,7 @@ script:
                         id(write_mode).execute(0);
                         id(fault) = true;
                         id(pending) = false;
+                        id(power_switch).publish_state(false);  // show it's off
                       } else if (heat ? id(terma_hub).is_element_mode(m) : !id(terma_hub).is_heating(m)) {
                         id(pending) = false;
                         ESP_LOGI("terma", "Confirmed %s (mode 0x%02X, target %.1f C)", heat ? "ON" : "OFF", m, t);
