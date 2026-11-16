@@ -4,6 +4,13 @@ An [ESPHome](https://esphome.io/) integration that switches a **Terma Blue Line*
 Bluetooth heating element (tested on the **Terma MOA Blue**) on and off from an
 ESP32, for a Home Assistant thermostat to drive.
 
+This is a cut-down fork of Kamil Golec's
+[kumalg/esphome-terma-blue-line](https://github.com/kumalg/esphome-terma-blue-line),
+which exposes the radiator's own room/element modes, targets and auto-off timer over
+a persistent connection. If you want those, use the upstream project. This fork keeps
+only on/off control, connects only when it needs to, and adds support for
+`legacy`-protocol radiators.
+
 Home Assistant makes the decisions (typically a Generic Thermostat with its own room
 sensor); the ESP exposes one **Radiator Power** switch. On runs the element at a fixed
 temperature (60 °C, full power, by default); off is off. The ESP **doesn't hold a
