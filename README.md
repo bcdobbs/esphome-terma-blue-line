@@ -460,8 +460,9 @@ unencrypted link. ESPHome does not initiate encryption on its own, so the
 `terma_moa` component calls `esp_ble_set_encryption` on `ESP_GATTC_OPEN_EVT`. This
 is the whole reason the component exists. It then waits for both the pairing result
 (`ESP_GAP_BLE_AUTH_CMPL_EVT`) and service discovery before reporting the link ready:
-`id(terma_hub).is_ready()` gates every read and write, and its `on_ready:` trigger
-reads all characteristics immediately.
+`id(terma_hub).is_ready()` gates every write and every polled read, and its
+`on_ready:` trigger refreshes the status. (ESPHome itself reads each characteristic
+once right after service discovery.)
 
 ## Extending it (new models / features)
 

@@ -31,9 +31,9 @@ ble_client:
     auto_connect: true
     on_connect:
       then:
-        # The terma_moa component has already requested encryption. The link isn't
-        # usable until that finishes - terma_moa's on_ready fires then.
-        - logger.log: "BLE client connected - waiting for encryption"
+        # Fires once service discovery finishes. terma_moa's on_ready (below) fires
+        # once the link is also encrypted - that's when it's usable.
+        - logger.log: "BLE client connected"
     on_passkey_request:
       then:
         # The PIN is fixed by the radiator (Terma Blue Line default), not configurable.
@@ -61,10 +61,8 @@ terma_moa:
     then:
       - logger.log: "BLE connection ready"
       - component.update: radiator_status
-      # Read everything straight away rather than waiting for the next poll.
-      - component.update: mode_raw
-      - component.update: room_temp_raw
-      - component.update: heater_temp_raw
+      # No reads needed here: ESPHome reads every ble_client sensor once right after
+      # service discovery, then the interval: blocks below take over.
 
 # Globals to store state. Nothing is restored across reboots: the radiator is the
 # source of truth and is read as soon as the link is ready.
@@ -241,8 +239,9 @@ sensor:
       return NAN;
 
   # Timer countdown (b6). Bytes 0-1 = remaining seconds, bytes 2-3 = total duration.
-  # Only read while a modern radiator is heating (see interval: above); shows 0 once
-  # the radiator turns off.
+  # Polled only while a modern radiator is heating (see interval: above); shows 0 once
+  # the radiator turns off. ESPHome still reads it once per connection; legacy units
+  # return a short payload, so it shows as unknown there.
   - platform: ble_client
     type: characteristic
     ble_client_id: terma_moa_ble_client
