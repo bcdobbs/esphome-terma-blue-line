@@ -28,7 +28,8 @@ framework.
   or let the radiator hold the room air at a target (15–30 °C), using its own
   built-in sensor and regulation.
 - **Auto-off timer** — start the radiator's native bounded timer for a chosen
-  duration, watch the countdown, and stop it without switching the radiator off.
+  duration, watch the countdown, and stop it without switching the radiator off
+  (`modern`-protocol units only; see [Protocol versions](#protocol-versions)).
 - **Two-way state** — Heat Mode, targets, power and status all reflect changes
   made on the physical thermostat or the Terma app, decoded straight from the
   radiator's mode byte.
@@ -36,7 +37,9 @@ framework.
   binary sensors let you build policies in HA automations (e.g. *notify me if the
   radiator is heating with no auto-off timer*).
 - **Persistent encrypted BLE** — pair once, then reconnect automatically on every
-  boot.
+  boot. Nothing is read or written until the link is actually encrypted.
+- **Two protocol generations** — `modern` (default) and `legacy` units are both
+  supported via one setting.
 
 ## Entities exposed
 
@@ -44,17 +47,17 @@ framework.
 |---|---|---|
 | Radiator Element Temperature | sensor (°C) | Current element temperature |
 | Radiator Room Sensor | sensor (°C) | Radiator's built-in room sensor (not lab-accurate) |
-| Timer Remaining | sensor (min) | Countdown while a timer runs |
+| Timer Remaining | sensor (min) | Countdown while a timer runs; 0 when off (`modern` only) |
 | Heating Active | binary sensor | On whenever the radiator is heating |
-| Timer Active | binary sensor | On while an auto-off timer is counting down |
-| Radiator BLE Connected | binary sensor (diagnostic) | Link state |
+| Timer Active | binary sensor | On while an auto-off timer is counting down (`modern` only) |
+| Radiator BLE Connected | binary sensor (diagnostic) | On once the link is encrypted and usable |
 | Radiator Status | text sensor | Decoded mode: `Element - Manual`, `Room - Timer`, `Off`, … |
 | Heat Mode | select | `Element` / `Room` |
 | Element Target Temperature | number | 30–60 °C, 7.5 °C steps (the radiator's 5 physical levels) |
 | Room Target Temperature | number | 15–30 °C, 0.5 °C steps |
 | Timer Duration | number | 15–180 min — how long **Start Timer** runs |
 | Radiator Power | switch | On = manual (continuous) heating in the selected mode |
-| Start Timer / Stop Timer | button | Start or cancel the auto-off timer |
+| Start Timer / Stop Timer | button | Start or cancel the auto-off timer (`modern` only) |
 | Clear BLE Bonds / Restart | button (diagnostic) | Re-pairing / reboot |
 
 ## Optional: one adaptive control in Home Assistant
@@ -251,11 +254,11 @@ wifi:
   password: !secret wifi_password
 
 external_components:
-  - source: github://kumalg/esphome-terma-blue-line@main
+  - source: github://bcdobbs/esphome-terma-blue-line@main
     components: [terma_moa]
 
 packages:
-  terma: github://kumalg/esphome-terma-blue-line/terma.package.yaml@main
+  terma: github://bcdobbs/esphome-terma-blue-line/terma.package.yaml@main
 ```
 
 1. **Create your secrets.** Copy `secrets.yaml.example` to `secrets.yaml` and fill
@@ -267,9 +270,15 @@ packages:
 3. **Flash** with ESPHome (`esphome run terma-moa-blue.example.yaml`), or just
    Install from ESPHome Builder.
 
-Pin `@main` to a released tag (e.g. `@v1.0.0`) once the repo is tagged, for
-reproducible builds. To override the pairing PIN, add `passkey: "your-pin"` under
-`substitutions`.
+**Pin the version.** Both git references compile code from this repo straight into
+your firmware, and `@main` follows whatever the latest commit is. For reproducible
+builds that only change when you decide, replace `main` in both with a release tag
+(e.g. `@v1.0.0`) or a full commit SHA.
+
+The secret names above match [`secrets.yaml.example`](secrets.yaml.example). ESPHome
+Builder shares one secrets file between all devices, so the AtomS3 example below uses
+device-prefixed names (`terma_moa_blue__radiator_mac`, …) instead. Either works as long
+as the `!secret` names match your secrets file.
 
 ### Protocol versions
 
@@ -290,28 +299,34 @@ under `substitutions` (the default is `modern`):
 
 Signs that your radiator is `legacy`:
 
+- The logs show a `terma_moa` warning that the radiator looks like the other protocol.
+  This check runs automatically and is the quickest sign.
 - The temperatures are nonsense: for example **Radiator Element Temperature** shows
   `2995.3 °C` where the raw log line is `b2 element raw (4 bytes): 01.75.02.58`.
-  Read big-endian, that's 37.3 °C current and 60.0 °C target.
-- The log shows `b3 mode raw (1 bytes)`. Modern units send 4 bytes.
+  Read big-endian, that's 37.3 °C current and 60.0 °C target. (Raw payloads are logged
+  at `VERBOSE`: set `logger: level: VERBOSE` to see them.)
+- The raw log shows `b3 mode raw (1 bytes)`. Modern units send 4 bytes.
 - **Radiator Power** won't stay on. A modern-protocol write (`0x21 00 00 00`, with a
   byte-swapped target) means nothing to a legacy unit, so it stays off and the next
   poll flips the switch back.
 - Pressing the radiator's own button gives `Operating mode: 0x06` (element) or `0x05`
   (room).
-- The logs show a `terma_moa` warning that the radiator looks like the other protocol.
 
 On `legacy`, the integration follows J1mbo's safeguard: these units can end up with a
 **doubled target** if switched straight between room and element mode, so every
 change goes **off → target → mode** and is then read back. If a read-back target is
 above the radiator's maximum (30 °C room, 60 °C element), it switches the radiator
-off and logs an error. **Start Timer** / **Stop Timer** do nothing on `legacy` units,
-and **Timer Active** stays off.
+off and logs an error. **Start Timer** / **Stop Timer** only log a warning on `legacy`
+units, **Timer Active** stays off, and **Timer Remaining** is never read.
+
+On `modern` units, changing **Heat Mode** while a timer is running switches the
+radiator to continuous heating in the new mode, which cancels the timer (a warning is
+logged). Press **Start Timer** again if you still want one.
 
 A complete, tested config for an **M5Stack AtomS3 Lite** (ESP32-S3) is in
 [`examples/m5stack-atoms3-lite.yaml`](examples/m5stack-atoms3-lite.yaml). It uses
 `variant:` rather than `board:`, OTA secured by the API key, `protocol: legacy`, and
-git sources with `refresh: 0s` so new commits are picked up straight away.
+the long-form git sources with explicit `ref` and `refresh`.
 
 ### Finding your radiator's MAC
 
@@ -346,9 +361,9 @@ The radiator only bonds when it's in **pairing mode**:
 
 1. Put the radiator into Bluetooth pairing mode (see the Terma manual — usually a
    long-press until the BLE indicator flashes).
-2. Boot the ESP. It connects and negotiates encryption using PIN **`123456`**
-   (the Terma Blue Line default; change the `passkey:` in the config if yours
-   differs).
+2. Boot the ESP. It connects and negotiates encryption using PIN **`123456`**.
+   The PIN is fixed by the radiator itself (the Terma Blue Line default), so there's
+   nothing to configure.
 3. Once bonded, subsequent reconnects are automatic — no pairing mode needed.
 
 To re-pair (e.g. after replacing the ESP), press **Clear BLE Bonds**, restart the
@@ -443,7 +458,10 @@ the final run-mode write is what actually starts the countdown:
 **Encryption** — the radiator refuses to serve its characteristics over an
 unencrypted link. ESPHome does not initiate encryption on its own, so the
 `terma_moa` component calls `esp_ble_set_encryption` on `ESP_GATTC_OPEN_EVT`. This
-is the whole reason the component exists.
+is the whole reason the component exists. It then waits for both the pairing result
+(`ESP_GAP_BLE_AUTH_CMPL_EVT`) and service discovery before reporting the link ready:
+`id(terma_hub).is_ready()` gates every read and write, and its `on_ready:` trigger
+reads all characteristics immediately.
 
 ## Extending it (new models / features)
 
@@ -457,11 +475,14 @@ sequences. PRs updating the protocol table are welcome.
 
 ## Acknowledgments
 
-This project began as a fork of Andrew's
-[terma-moa-blue-esphome](https://github.com/Andrew-a-g/terma-moa-blue-esphome) and
-grew into a standalone ESP-IDF rewrite with room/element control, a full timer
+This repository is a fork of Kamil Golec's
+[kumalg/esphome-terma-blue-line](https://github.com/kumalg/esphome-terma-blue-line),
+adding support for `legacy`-protocol radiators. That project began as a fork of
+Andrew's [terma-moa-blue-esphome](https://github.com/Andrew-a-g/terma-moa-blue-esphome)
+and grew into a standalone ESP-IDF rewrite with room/element control, a full timer
 implementation, and exact mode decoding. Huge thanks to:
 
+- [kumalg/esphome-terma-blue-line](https://github.com/kumalg/esphome-terma-blue-line) — the ESP-IDF rewrite this fork builds on
 - [Andrew-a-g/terma-moa-blue-esphome](https://github.com/Andrew-a-g/terma-moa-blue-esphome) — the original ESPHome project this builds on
 - [Home Assistant Community thread](https://community.home-assistant.io/t/terma-blue-line-bluetooth-radiators-and-heating-elements/81325) — the protocol reverse-engineering groundwork
 - [J1mbo/homebridge-TERMA-MOA-Blue](https://github.com/J1mbo/homebridge-TERMA-MOA-Blue/) — a great HomeKit solution and protocol reference
@@ -470,7 +491,7 @@ implementation, and exact mode decoding. Huge thanks to:
 
 ## License
 
-[MIT](LICENSE). Includes the original copyright from the upstream project.
+[MIT](LICENSE). Includes the copyright notices from the upstream projects.
 
 ## Disclaimer
 
