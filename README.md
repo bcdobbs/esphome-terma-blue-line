@@ -283,8 +283,9 @@ so they're the safest choice.
 
 How it behaves:
 
-- **Every command** connects, switches off, (for on) writes the element target and
-  element mode, reads the mode back to confirm, then disconnects - a few seconds.
+- **Every command** connects and reads the radiator's state first. If it's already
+  as asked, nothing is written. Otherwise it switches off, (for on) writes the element
+  target and element mode, reads back to confirm, then disconnects - a few seconds.
 - **Failures are retried** 3 times, then once a minute until confirmed. The switch
   shows what was asked for; Radiator Status shows what was confirmed.
 - **Safety:** if the radiator reports an element target above 60 °C after switching on
@@ -338,7 +339,9 @@ heating until the thermostat next turns it on and off itself. Keep alive makes t
 thermostat re-send its current on/off state on a schedule, so a manual change is
 corrected within that interval.
 
-Each re-send is one short connection (a few seconds). If your radiator whines while
+Each re-send is one short connection (a few seconds). Because the package checks
+first, a re-send to a radiator that's already in the right state writes nothing - it
+only acts if something was changed at the radiator. If your radiator whines while
 connected and that's noticeable, lengthen the interval - 60 min is a reasonable
 compromise.
 
@@ -400,8 +403,8 @@ packages:
 ```
 
 1. **Create your secrets.** Copy `secrets.yaml.example` to `secrets.yaml` and fill
-   in Wi-Fi, an API encryption key, an OTA password, an AP fallback password, and
-   your radiator's MAC (`radiator_mac`). Don't know the MAC? See
+   in the section for your config: Wi-Fi, your radiator's MAC, an API encryption key,
+   and (for this config) an OTA password and a fallback hotspot password. Don't know the MAC? See
    [Finding your radiator's MAC](#finding-your-radiators-mac).
 2. **Set `board:`** to your ESP32. Leave `framework: esp-idf` — the component
    requires it.
@@ -417,10 +420,11 @@ your firmware, and `@main` follows whatever the latest commit is. For reproducib
 builds that only change when you decide, replace `main` in both with a release tag
 (e.g. `@v1.0.0`) or a full commit SHA.
 
-The secret names above match [`secrets.yaml.example`](secrets.yaml.example). ESPHome
-Builder shares one secrets file between all devices, so the AtomS3 example below uses
-device-prefixed names (`terma_moa_blue__radiator_mac`, …) instead. Either works as long
-as the `!secret` names match your secrets file.
+[`secrets.yaml.example`](secrets.yaml.example) lists the secrets each example uses.
+The AtomS3 examples use device-prefixed names (`terma_moa_blue__radiator_mac`, …),
+because ESPHome Builder shares one secrets file between all devices, and secure OTA
+with the API key instead of a separate password. Any names work as long as the
+`!secret` names match your secrets file.
 
 ### Protocol versions
 

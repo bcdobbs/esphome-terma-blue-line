@@ -6,9 +6,14 @@
 # That keeps the radiator free between commands (and quiet - some units whine while a
 # phone or ESP is connected).
 #
-#   Radiator Power ON  -> connect -> off -> element target 60 C -> element mode
-#                         -> read back and check -> disconnect
-#   Radiator Power OFF -> connect -> off -> read back and check -> disconnect
+#   Every command: connect -> read the radiator's state. If it's already as asked,
+#   disconnect - nothing is written. Otherwise:
+#   Radiator Power ON  -> off -> element target (60 C) -> element mode
+#   Radiator Power OFF -> off
+#   then read back and check -> disconnect
+#
+# So a repeated command (e.g. a thermostat's keep_alive) is just a quick check, and
+# only corrects the radiator if someone changed it at the radiator itself.
 #
 # A failed command is retried 3 times straight away, then once a minute until it works.
 # The switch shows what was asked for; Radiator Status shows what was confirmed.
@@ -57,6 +62,9 @@ globals:
   - id: fault          # safety cut-out fired; stop retrying
     type: bool
     initial_value: "false"
+  - id: needs_write    # the radiator isn't already as asked
+    type: bool
+    initial_value: "true"
   - id: attempt
     type: int
     initial_value: "0"
@@ -136,6 +144,20 @@ script:
           characteristic_uuid: "d97352b2-d19e-11e2-9e96-0800200c9a66"
           value: !lambda "return id(terma_hub).encode_target(false, t);"
 
+  # Read the mode (b3) and element target (b2) into read_mode / read_target.
+  # read_mode stays -1 if no answer arrives within 5 s.
+  - id: read_back
+    then:
+      - lambda: |-
+          id(read_mode) = -1;
+          id(read_target) = NAN;
+      - component.update: mode_raw
+      - component.update: element_raw
+      - wait_until:
+          condition:
+            lambda: "return id(read_mode) >= 0 && !std::isnan(id(read_target));"
+          timeout: 5s
+
   # Connect, set the radiator on or off, check it took, disconnect. mode: restart -
   # a newer command replaces one still in progress (and reuses its connection).
   - id: apply_power
@@ -171,52 +193,68 @@ script:
                 condition:
                   lambda: "return id(terma_hub).is_ready();"
                 then:
-                  # Always via off first: legacy units can double the target if the
-                  # mode is changed directly (see README "Protocol versions").
-                  - script.execute: { id: write_mode, m: 0 }
-                  - script.wait: write_mode
-                  - if:
-                      condition:
-                        lambda: "return heat;"
-                      then:
-                        - delay: 500ms
-                        - script.execute: { id: write_target, t: "${element_temp}" }
-                        - script.wait: write_target
-                        - delay: 500ms
-                        - script.execute:
-                            id: write_mode
-                            m: !lambda "return id(terma_hub).mode_manual(false);"
-                        - script.wait: write_mode
-                  # Read back what the radiator now reports.
-                  - delay: 1s
-                  - lambda: |-
-                      id(read_mode) = -1;
-                      id(read_target) = NAN;
-                  - component.update: mode_raw
-                  - component.update: element_raw
-                  - wait_until:
-                      condition:
-                        lambda: "return id(read_mode) >= 0 && !std::isnan(id(read_target));"
-                      timeout: 5s
+                  # Check first: if it's already as asked, there's nothing to write.
+                  - script.execute: read_back
+                  - script.wait: read_back
                   - lambda: |-
                       int m = id(read_mode);
                       float t = id(read_target);
-                      if (m < 0) {
-                        ESP_LOGW("terma", "No read-back from the radiator");
-                      } else if (heat && t > 60.5f) {
-                        // Safety net: never leave it heating with an out-of-range target.
-                        ESP_LOGE("terma", "Element target read back as %.1f C - switching off", t);
-                        id(write_mode).execute(0);
-                        id(fault) = true;
+                      // The target actually sent (encode_target clamps to 30-60 C).
+                      float want = std::min(60.0f, std::max(30.0f, (float) ${element_temp}));
+                      bool as_asked = m >= 0 &&
+                          (heat ? id(terma_hub).is_element_mode(m) && fabsf(t - want) < 0.05f
+                                : !id(terma_hub).is_heating(m));
+                      id(needs_write) = !as_asked;
+                      if (as_asked) {
                         id(pending) = false;
-                        id(power_switch).publish_state(false);  // show it's off
-                      } else if (heat ? id(terma_hub).is_element_mode(m) : !id(terma_hub).is_heating(m)) {
-                        id(pending) = false;
-                        ESP_LOGI("terma", "Confirmed %s (mode 0x%02X, target %.1f C)", heat ? "ON" : "OFF", m, t);
-                      } else {
-                        ESP_LOGW("terma", "Radiator reports mode 0x%02X - not what was asked", m);
+                        ESP_LOGI("terma", "Already %s (mode 0x%02X, target %.1f C) - nothing to change",
+                                 heat ? "ON" : "OFF", m, t);
+                      } else if (m >= 0) {
+                        ESP_LOGI("terma", "Radiator is in mode 0x%02X (target %.1f C) - changing it", m, t);
                       }
-                  - script.wait: write_mode
+                  - if:
+                      condition:
+                        lambda: "return id(needs_write);"
+                      then:
+                        # Always via off first: legacy units can double the target if
+                        # the mode is changed directly (see README "Protocol versions").
+                        - script.execute: { id: write_mode, m: 0 }
+                        - script.wait: write_mode
+                        - if:
+                            condition:
+                              lambda: "return heat;"
+                            then:
+                              - delay: 500ms
+                              - script.execute: { id: write_target, t: "${element_temp}" }
+                              - script.wait: write_target
+                              - delay: 500ms
+                              - script.execute:
+                                  id: write_mode
+                                  m: !lambda "return id(terma_hub).mode_manual(false);"
+                              - script.wait: write_mode
+                        # Read back what the radiator now reports.
+                        - delay: 1s
+                        - script.execute: read_back
+                        - script.wait: read_back
+                        - lambda: |-
+                            int m = id(read_mode);
+                            float t = id(read_target);
+                            if (m < 0) {
+                              ESP_LOGW("terma", "No read-back from the radiator");
+                            } else if (heat && t > 60.5f) {
+                              // Safety net: never leave it heating with an out-of-range target.
+                              ESP_LOGE("terma", "Element target read back as %.1f C - switching off", t);
+                              id(write_mode).execute(0);
+                              id(fault) = true;
+                              id(pending) = false;
+                              id(power_switch).publish_state(false);  // show it's off
+                            } else if (heat ? id(terma_hub).is_element_mode(m) : !id(terma_hub).is_heating(m)) {
+                              id(pending) = false;
+                              ESP_LOGI("terma", "Confirmed %s (mode 0x%02X, target %.1f C)", heat ? "ON" : "OFF", m, t);
+                            } else {
+                              ESP_LOGW("terma", "Radiator reports mode 0x%02X - not what was asked", m);
+                            }
+                        - script.wait: write_mode
                 else:
                   - logger.log:
                       level: WARN
