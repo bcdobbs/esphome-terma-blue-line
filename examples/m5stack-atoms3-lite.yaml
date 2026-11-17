@@ -29,6 +29,11 @@ esp32:
     type: esp-idf
     advanced:
       flash_chip: generic
+    # Full Bluetooth transmit power (+20 dBm; the default is +9). The radiator hears
+    # the ESP less well than the other way round, especially while its element is
+    # heating - without this, "off" commands could fail for minutes. ESP32-S3/C3 only.
+    sdkconfig_options:
+      CONFIG_BT_CTRL_DFT_TX_POWER_LEVEL_P20: y
 
 logger:
 
