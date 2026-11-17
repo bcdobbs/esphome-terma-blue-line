@@ -1,34 +1,34 @@
 # Terma MOA Blue on an M5Stack AtomS3 Lite (ESP32-S3, 8 MB flash, USB-C, own case).
-# A working device config: copy it into ESPHome Builder and add the secrets below.
+# A complete device config: copy it into ESPHome Builder and add the secrets below.
+#
+# Exposes one "Radiator Power" switch that runs the element at element_temp (default
+# 60 C, full power) or off, for a Home Assistant thermostat to drive. The ESP connects
+# over Bluetooth only to send a command, then disconnects. See README.
 #
 # Secrets used (ESPHome Builder > Secrets):
-#   terma_moa_blue__radiator_mac        the radiator's BLE MAC, e.g. "CC:22:37:10:DB:CE"
-#   terma_moa_blue__api_encryption_key  32-byte base64 key (also secures OTA, see below)
-#   wifi_ssid / wifi_password           2.4 GHz network - the ESP32 has no 5 GHz radio
-#
-# Don't know the MAC yet? Use the "Find your radiator's MAC" block at the bottom.
+#   terma_moa_blue__radiator_mac        the radiator's BLE MAC, e.g. "XX:XX:XX:XX:XX:XX"
+#   terma_moa_blue__api_encryption_key  32-byte base64 key (also secures OTA)
+#   wifi_ssid / wifi_password           2.4 GHz network
 
 substitutions:
   device_name: terma-moa-blue
   radiator_mac: !secret terma_moa_blue__radiator_mac
-  # This unit speaks the older ("legacy") Terma protocol: big-endian values, a 1-byte
-  # mode, room/element modes 5/6, no timer. Delete this line if yours works without
-  # it - the logs warn if the setting looks wrong. See README "Protocol versions".
-  protocol: legacy
+  protocol: legacy        # delete if your radiator uses the modern protocol
+  # Element temperature while on. The radiator's 5 button levels:
+  #   "30" | "37.5" | "45" | "52.5" | "60" (full power, the default)
+  # Any value from 30 to 60 works; values outside that range are clamped.
+  element_temp: "60"
 
 esphome:
   name: ${device_name}
 
-# Newer ESPHome selects the chip by variant rather than a PlatformIO board name.
-# The AtomS3 Lite is an ESP32-S3 - building for plain "esp32" boot-loops it with
-# "invalid header: 0xffffffff".
 esp32:
   variant: esp32s3
   flash_size: 8MB
   framework:
-    type: esp-idf          # required by the terma_moa component
+    type: esp-idf
     advanced:
-      flash_chip: generic  # suggested by ESPHome at boot to save IRAM
+      flash_chip: generic
 
 logger:
 
@@ -36,7 +36,6 @@ api:
   encryption:
     key: !secret terma_moa_blue__api_encryption_key
 
-# OTA uses the API key (Noise encryption) - no separate OTA password.
 ota:
   - platform: esphome
     encryption:
@@ -45,10 +44,6 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
 
-# Long form so `ref` and `refresh` are explicit. Both sources compile code from the
-# repo into the firmware: for reproducible builds, set `ref` to a release tag or full
-# commit SHA instead of `main`. `refresh: 1d` re-checks git once a day; set it to 0s
-# temporarily while testing fresh pushes so every install pulls the latest commit.
 external_components:
   - source:
       type: git
@@ -61,34 +56,18 @@ packages:
   terma:
     url: https://github.com/bcdobbs/esphome-terma-blue-line
     ref: main
-    files: [terma.package.yaml]
+    files: [terma-on-demand.package.yaml]
     refresh: 1d
-
-# ---------------------------------------------------------------------------
-# Room sensor calibration (optional)
-# ---------------------------------------------------------------------------
-# The radiator's built-in room sensor sits in the controller and reads high,
-# especially while the element is hot. Each line is "radiator reads -> true value".
-# Take one reading with the rail off for an hour+ and one after 30 min heating,
-# against a thermometer at head height away from the rail, then uncomment.
-# This changes the value shown in Home Assistant only - in Room mode the radiator
-# still regulates on its own uncorrected sensor. See README "Room temperature".
-#
-# sensor:
-#   - id: !extend room_temp_raw
-#     filters:
-#       - calibrate_linear:
-#           - 24.9 -> 21.5   # rail off and cold   (replace with your readings)
-#           - 28.3 -> 22.0   # rail on and hot     (replace with your readings)
 
 # ---------------------------------------------------------------------------
 # Find your radiator's MAC
 # ---------------------------------------------------------------------------
 # 1. Put any placeholder in the radiator_mac secret (e.g. "00:00:00:00:00:00").
-# 2. Uncomment the block below and install.
-# 3. Close the Terma app / turn off phone Bluetooth (the radiator advertises only
-#    while nothing is connected), press the radiator's button to wake it, and watch
-#    the logs for:   [find_terma] Found 'MOA Blue TERMA' MAC: XX:XX:XX:XX:XX:XX
+# 2. Uncomment the block below and install. The ESP scans for 5 minutes after boot.
+# 3. Within that time, close the Terma app / turn off phone Bluetooth (the radiator
+#    advertises only while nothing is connected), press the radiator's button to wake
+#    it, and watch the logs for:
+#      [find_terma] Found 'MOA Blue TERMA' MAC: XX:XX:XX:XX:XX:XX
 # 4. Put that MAC in the secret, comment the block out again, put the radiator in
 #    pairing mode (long-press until the BLE light flashes) and install.
 #

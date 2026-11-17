@@ -30,28 +30,15 @@ uint16_t TermaMoa::decode_u16(const std::vector<uint8_t> &x, size_t offset) cons
   return this->is_legacy() ? (uint16_t) ((a << 8) | b) : (uint16_t) ((b << 8) | a);
 }
 
-std::vector<uint8_t> TermaMoa::encode_u16_pair(uint16_t first, uint16_t second) const {
-  if (this->is_legacy()) {
-    return {(uint8_t) (first >> 8), (uint8_t) (first & 0xFF), (uint8_t) (second >> 8),
-            (uint8_t) (second & 0xFF)};
-  }
-  return {(uint8_t) (first & 0xFF), (uint8_t) (first >> 8), (uint8_t) (second & 0xFF),
-          (uint8_t) (second >> 8)};
-}
-
-std::vector<uint8_t> TermaMoa::encode_target(bool room, float celsius) const {
-  const float lo = room ? 15.0f : 30.0f;
-  const float hi = room ? 30.0f : 60.0f;
+std::vector<uint8_t> TermaMoa::encode_element_target(float celsius) const {
   if (std::isnan(celsius))
-    celsius = lo;
-  const float c = celsius < lo ? lo : (celsius > hi ? hi : celsius);
-  return this->encode_u16_pair(0, (uint16_t) std::lround(c * 10.0f));
-}
-
-int TermaMoa::mode_manual(bool room) const {
+    celsius = 30.0f;
+  const float c = celsius < 30.0f ? 30.0f : (celsius > 60.0f ? 60.0f : celsius);
+  const uint16_t v = (uint16_t) std::lround(c * 10.0f);
+  // Bytes 0-1 zero, target in bytes 2-3, in the protocol's byte order.
   if (this->is_legacy())
-    return room ? 0x05 : 0x06;
-  return room ? 0x11 : 0x21;
+    return {0, 0, (uint8_t) (v >> 8), (uint8_t) (v & 0xFF)};
+  return {0, 0, (uint8_t) (v & 0xFF), (uint8_t) (v >> 8)};
 }
 
 std::vector<uint8_t> TermaMoa::encode_mode(int mode) const {
@@ -65,65 +52,6 @@ bool TermaMoa::is_heating(int mode) const {
     return mode != 0x00;
   // Modern: off is 0x00 (physical) or 0x20 (via app on newer firmware).
   return mode != 0x00 && mode != 0x20;
-}
-
-bool TermaMoa::is_room_mode(int mode) const {
-  if (this->is_legacy())
-    return mode == 0x05;
-  return mode == 0x11 || mode == 0x03;
-}
-
-bool TermaMoa::is_element_mode(int mode) const {
-  if (this->is_legacy())
-    return mode == 0x06;
-  return mode == 0x21 || mode == 0x05;
-}
-
-bool TermaMoa::is_timer_mode(int mode) const {
-  if (this->is_legacy())
-    return false;
-  return mode == 0x03 || mode == 0x05 || mode == 0x09;
-}
-
-const char *TermaMoa::mode_name(int mode) {
-  if (this->is_legacy()) {
-    switch (mode) {
-      case 0x00:
-        return "Off";
-      case 0x05:
-        return "Room";
-      case 0x06:
-        return "Element";
-      default:
-        break;
-    }
-  } else {
-    // The modern b3 byte is a bitfield. Observed: 0x00 off, 0x20 off (remote/app),
-    // 0x01 on, 0x03 room+timer, 0x05 element+timer, 0x09 physical timer,
-    // 0x11 room+manual, 0x21 element+manual.
-    switch (mode) {
-      case 0x00:
-        return "Off";
-      case 0x20:
-        return "Off (remote)";
-      case 0x11:
-        return "Room - Manual";
-      case 0x21:
-        return "Element - Manual";
-      case 0x03:
-        return "Room - Timer";
-      case 0x05:
-        return "Element - Timer";
-      case 0x09:
-        return "Timer (physical)";
-      case 0x01:
-        return "On";
-      default:
-        break;
-    }
-  }
-  snprintf(this->mode_name_buf_, sizeof(this->mode_name_buf_), "On (0x%02X)", mode & 0xFF);
-  return this->mode_name_buf_;
 }
 
 void TermaMoa::warn_protocol_(const char *evidence) {
@@ -172,15 +100,8 @@ void TermaMoa::set_link_state_(bool encrypted, bool discovered) {
   if (ready == this->ready_)
     return;
   this->ready_ = ready;
-  if (ready) {
+  if (ready)
     ESP_LOGI(TAG, "Link encrypted and services discovered - radiator ready");
-    // Defer to the next loop: the other ble_client nodes (the sensors) may not have
-    // handled SEARCH_CMPL yet, and on_ready usually reads them straight away.
-    this->defer([this]() {
-      if (this->is_ready())
-        this->ready_callback_.call();
-    });
-  }
 }
 
 void TermaMoa::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
