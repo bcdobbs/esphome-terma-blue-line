@@ -85,9 +85,24 @@ globals:
 # The read-back sensors log a warning on every disconnect, and their automatic read on
 # connect can fail before the link is encrypted. Both are expected here - the apply
 # script checks the read-back itself - so only show their errors.
+#
+# The BLE stack's step-by-step debug lines are hidden too. The terma lines (and the
+# BLE client's info lines: connecting, open, auth, discovery, disconnect) tell the
+# story of each command. "esp-idf" is the Bluetooth controller's own chatter, which
+# ESPHome logs at DEBUG whatever its real severity. To see everything again while
+# debugging, override these in your device file, e.g.
+#   logger:
+#     logs:
+#       esp32_ble_client: DEBUG
+#       esp-idf: DEBUG
 logger:
   logs:
     ble_sensor: ERROR
+    esp32_ble_client: CONFIG
+    esp32_ble_tracker: CONFIG
+    ble_client: CONFIG
+    ble_client.automation: WARN
+    esp-idf: INFO
 
 # Read-back only: polled by the apply script, never on a timer. Internal because the
 # values are only fresh at the moment of a command.
