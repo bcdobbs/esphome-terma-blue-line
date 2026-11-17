@@ -159,6 +159,8 @@ esp32:
     type: esp-idf          # required by the terma_moa component
     advanced:
       flash_chip: generic
+    sdkconfig_options:     # full Bluetooth transmit power - see "Reading the logs"
+      CONFIG_BT_CTRL_DFT_TX_POWER_LEVEL_P20: y
 
 logger:
 
@@ -254,19 +256,32 @@ A healthy command looks like this (info level):
 ```
 
 **`Connection open error, status=133`** followed by `Could not connect to the
-radiator` means the Bluetooth link couldn't be set up: the radiator didn't answer
-the ESP's connection request. It's retried automatically, and an occasional one is
-harmless. If you see them often:
+radiator` means the Bluetooth link couldn't be set up: the ESP heard the radiator
+and asked to connect, but the radiator didn't answer. It's retried automatically,
+and an occasional one is harmless. If you see them often:
 
-- **Check the `Radiator signal` line.** Around -80 dBm or better is comfortable;
-  below -85 dBm it's logged as a warning and connections get unreliable and slow.
-  Move the ESP closer or into line of sight. On an ESP32, Wi-Fi and Bluetooth share
-  one radio, so a weak Wi-Fi signal (shown in the ESP's startup log) makes Bluetooth
-  worse too.
-- **Switching off is usually the slow one.** An "off" command always reaches the
-  radiator while its element is heating, and that's when its Bluetooth is at its
-  worst: connections fail more often and service discovery can take 15-20 s instead
-  of about 5 s. The package allows for this.
+- **Turn up the ESP's Bluetooth transmit power.** This made the biggest difference on
+  the test unit. The radiator hears the ESP less well than the ESP hears it -
+  especially while its element is heating, so "off" commands suffered most: connects
+  failed for several minutes after switching on, and service discovery took 5-15 s.
+  At full power every command connected first time, with discovery in 1-2 s. On an
+  **ESP32-S3** or **ESP32-C3** (default +9 dBm, maximum +20 dBm), add this to the
+  `esp32:` block of your device YAML, as the
+  [example](examples/m5stack-atoms3-lite.yaml) does:
+
+  ```yaml
+  esp32:
+    framework:
+      sdkconfig_options:
+        CONFIG_BT_CTRL_DFT_TX_POWER_LEVEL_P20: y
+  ```
+
+  The original ESP32 has no such option.
+- **Check the `Radiator signal` line.** It measures the radiator's signal at the ESP
+  (so only one direction of the link). Around -80 dBm is fine with full transmit
+  power; below -85 dBm it's logged as a warning. If so, move the ESP closer or into
+  line of sight. On an ESP32, Wi-Fi and Bluetooth share one radio, so a weak Wi-Fi
+  signal (shown in the ESP's startup log) makes Bluetooth worse too.
 - **Close the Terma app.** The radiator accepts one connection at a time, so a phone
   connected to it locks the ESP out.
 
