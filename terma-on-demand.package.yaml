@@ -1,8 +1,8 @@
 # terma-on-demand.package.yaml - on/off control of a Terma Blue Line element.
 #
 # For when Home Assistant (e.g. a Generic Thermostat with its own room sensor)
-# decides when to heat. The ESP does NOT
-# hold a Bluetooth connection: it connects only to switch the radiator, then lets go.
+# decides when to heat. The ESP does NOT hold a Bluetooth connection: it connects
+# only to switch the radiator, then lets go.
 # That keeps the radiator free between commands (and quiet - some units whine while a
 # phone or ESP is connected).
 #
@@ -15,7 +15,7 @@
 # So a repeated command (e.g. a thermostat's keep_alive) is just a quick check, and
 # only corrects the radiator if someone changed it at the radiator itself.
 #
-# A failed command is retried 3 times straight away, then once a minute until it works.
+# A failed command gets up to 3 attempts straight away, then one a minute until it works.
 # The switch shows what was asked for; Radiator Status shows what was confirmed.
 # Changes made on the radiator's own buttons are not seen until the next command.
 #

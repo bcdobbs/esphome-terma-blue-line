@@ -44,8 +44,9 @@ first pairing. It's built for the **ESP-IDF** framework.
 - **Every command** connects and reads the radiator's state first. If it's already
   as asked, nothing is written. Otherwise it switches off, (for on) writes the element
   target and element mode, reads back to confirm, then disconnects - a few seconds.
-- **Failures are retried** 3 times, then once a minute until confirmed. The switch
-  shows what was asked for; Radiator Status shows what was confirmed.
+- **Failures are retried:** up to 3 attempts straight away, then once a minute until
+  confirmed. The switch shows what was asked for; Radiator Status shows what was
+  confirmed.
 - **Safety:** if the radiator reports an element target above 60 °C after switching on
   (the legacy doubled-target fault, see [Protocol versions](#protocol-versions)), it
   is switched straight off and the status says so.
@@ -278,9 +279,12 @@ back in pairing mode, and restart the ESP.
 
 Earlier versions of this repo (and [kumalg's upstream](https://github.com/kumalg/esphome-terma-blue-line))
 had a full package with room/element modes, targets and timers over a persistent
-connection. The last of them is tag [`v1.0.0`](https://github.com/bcdobbs/esphome-terma-blue-line/tree/v1.0.0)
-(also the `full-package` branch); point both `ref:` lines at it to keep using it. To switch: point `packages:` at `terma-on-demand.package.yaml` and delete
-any `!extend room_temp_raw` calibration block from your device YAML. The bond is kept,
+connection. The last of them is tag
+[`v1.0.0`](https://github.com/bcdobbs/esphome-terma-blue-line/tree/v1.0.0) (also the
+`full-package` branch); point both `ref:` lines at it to keep using it.
+
+To switch: point `packages:` at `terma-on-demand.package.yaml` and delete any
+`!extend room_temp_raw` calibration block from your device YAML. The bond is kept,
 so no re-pairing.
 
 **Radiator Power**, **Radiator Status**, **Clear BLE Bonds** and **Restart** keep their

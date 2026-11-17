@@ -5,11 +5,8 @@
 # 60 C, full power) or off, for a Home Assistant thermostat to drive. The ESP connects
 # over Bluetooth only to send a command, then disconnects. See README.
 #
-# While testing before the on-demand branch is merged, set both `ref:` lines below
-# to `on-demand` (and `refresh: 0s` to pick up new pushes immediately).
-#
 # Secrets used (ESPHome Builder > Secrets):
-#   terma_moa_blue__radiator_mac        the radiator's BLE MAC, e.g. "CC:22:37:10:DB:CE"
+#   terma_moa_blue__radiator_mac        the radiator's BLE MAC, e.g. "XX:XX:XX:XX:XX:XX"
 #   terma_moa_blue__api_encryption_key  32-byte base64 key (also secures OTA)
 #   wifi_ssid / wifi_password           2.4 GHz network
 
