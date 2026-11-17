@@ -88,9 +88,10 @@ globals:
 #
 # The BLE stack's step-by-step debug lines are hidden too. The terma lines (and the
 # BLE client's info lines: connecting, open, auth, discovery, disconnect) tell the
-# story of each command. "esp-idf" is the Bluetooth controller's own chatter, which
-# ESPHome logs at DEBUG whatever its real severity. To see everything again while
-# debugging, override these in your device file, e.g.
+# story of each command. Below DEBUG, a tag's startup config summary is hidden too.
+# "esp-idf" is the Bluetooth controller's own chatter, which ESPHome logs at DEBUG
+# whatever its real severity. To see everything again while debugging, override
+# these in your device file, e.g.
 #   logger:
 #     logs:
 #       esp32_ble_client: DEBUG
@@ -98,9 +99,9 @@ globals:
 logger:
   logs:
     ble_sensor: ERROR
-    esp32_ble_client: CONFIG
-    esp32_ble_tracker: CONFIG
-    ble_client: CONFIG
+    esp32_ble_client: INFO
+    esp32_ble_tracker: INFO
+    ble_client: INFO
     ble_client.automation: WARN
     esp-idf: INFO
 
