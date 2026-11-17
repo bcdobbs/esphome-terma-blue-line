@@ -16,7 +16,8 @@
 # So a repeated command (e.g. a thermostat's keep_alive) is just a quick check, and
 # only corrects the radiator if someone changed it at the radiator itself.
 #
-# A failed command gets up to 3 attempts straight away, then one a minute until it works.
+# A failed command gets up to 3 attempts straight away, then one a minute until it works
+# (attempt numbers in the log keep counting across those retries).
 # The switch shows what was asked for; Radiator Status shows what was confirmed.
 # Changes made on the radiator's own buttons are not seen until the next command.
 #
@@ -72,8 +73,14 @@ globals:
   - id: needs_write    # the radiator isn't already as asked
     type: bool
     initial_value: "true"
-  - id: attempt
+  - id: attempt        # attempts in the current run of apply_power
     type: int
+    initial_value: "0"
+  - id: attempt_no     # attempts since the last switch command, for the log
+    type: int
+    initial_value: "0"
+  - id: last_try_ms    # when the last attempt finished, so retries are a minute apart
+    type: uint32_t
     initial_value: "0"
   - id: read_mode      # last mode byte read back, -1 = no fresh read
     type: int
@@ -82,11 +89,7 @@ globals:
     type: float
     initial_value: "NAN"
 
-# The read-back sensors log a warning on every disconnect, and their automatic read on
-# connect can fail before the link is encrypted. Both are expected here - the apply
-# script checks the read-back itself - so only show their errors.
-#
-# The BLE stack's step-by-step debug lines are hidden too. The terma lines (and the
+# The BLE stack's step-by-step debug lines are hidden. The terma lines (and the
 # BLE client's info lines: connecting, open, auth, discovery, disconnect) tell the
 # story of each command. Below DEBUG, a tag's startup config summary is hidden too.
 # "esp-idf" is the Bluetooth controller's own chatter, which ESPHome logs at DEBUG
@@ -98,43 +101,11 @@ globals:
 #       esp-idf: DEBUG
 logger:
   logs:
-    ble_sensor: ERROR
     esp32_ble_client: INFO
     esp32_ble_tracker: INFO
     ble_client: INFO
     ble_client.automation: WARN
     esp-idf: INFO
-
-# Read-back only: polled by the apply script, never on a timer. Internal because the
-# values are only fresh at the moment of a command.
-sensor:
-  - platform: ble_client
-    type: characteristic
-    ble_client_id: terma_moa_ble_client
-    id: mode_raw
-    internal: true
-    service_uuid: "d97352b0-d19e-11e2-9e96-0800200c9a66"
-    characteristic_uuid: "d97352b3-d19e-11e2-9e96-0800200c9a66"
-    update_interval: never
-    lambda: |-
-      id(terma_hub).check_mode_payload(x);
-      if (x.empty()) return NAN;
-      id(read_mode) = x[0];
-      return (float) x[0];
-
-  - platform: ble_client
-    type: characteristic
-    ble_client_id: terma_moa_ble_client
-    id: element_raw
-    internal: true
-    service_uuid: "d97352b0-d19e-11e2-9e96-0800200c9a66"
-    characteristic_uuid: "d97352b2-d19e-11e2-9e96-0800200c9a66"
-    update_interval: never
-    lambda: |-
-      if (x.size() < 4) return NAN;
-      id(terma_hub).check_element_payload(x);
-      id(read_target) = id(terma_hub).decode_u16(x, 2) / 10.0f;
-      return id(terma_hub).decode_u16(x, 0) / 10.0f;
 
 script:
   # BLE writes live in their own scripts, which apply_power runs with script.wait.
@@ -168,18 +139,17 @@ script:
           value: !lambda "return id(terma_hub).encode_element_target(t);"
 
   # Read the mode (b3) and element target (b2) into read_mode / read_target.
-  # read_mode stays -1 if no answer arrives within 5 s.
+  # read_mode stays -1 if the radiator doesn't answer within 5 s.
   - id: read_back
     then:
-      - lambda: |-
-          id(read_mode) = -1;
-          id(read_target) = NAN;
-      - component.update: mode_raw
-      - component.update: element_raw
+      - lambda: "id(terma_hub).request_read();"
       - wait_until:
           condition:
-            lambda: "return id(read_mode) >= 0 && !std::isnan(id(read_target));"
+            lambda: "return !id(terma_hub).is_reading();"
           timeout: 5s
+      - lambda: |-
+          id(read_mode) = id(terma_hub).read_mode();
+          id(read_target) = id(terma_hub).read_target();
 
   # Connect, set the radiator on or off, check it took, disconnect, making up to
   # `tries` attempts. mode: restart - a newer command replaces one still in progress
@@ -215,12 +185,19 @@ script:
           then:
             - lambda: |-
                 id(attempt) += 1;
-                ESP_LOGI("terma", "Turning radiator %s (attempt %d)", id(heat_now) ? "ON" : "OFF", id(attempt));
+                id(attempt_no) += 1;
+                ESP_LOGI("terma", "Turning radiator %s (attempt %d)", id(heat_now) ? "ON" : "OFF", id(attempt_no));
                 id(terma_moa_ble_client).connect();
+            # Stop waiting as soon as the connection fails (the client drops back to
+            # IDLE). 30 s because a weak link can take ~20 s to get through encryption
+            # and service discovery - typically when switching off, with the element
+            # heating.
             - wait_until:
                 condition:
-                  lambda: "return id(terma_hub).is_ready();"
-                timeout: 20s
+                  lambda: |-
+                    return id(terma_hub).is_ready() ||
+                           id(terma_moa_ble_client).state() == esp32_ble_tracker::ClientState::IDLE;
+                timeout: 30s
             - if:
                 condition:
                   lambda: "return id(terma_hub).is_ready();"
@@ -297,14 +274,16 @@ script:
                             }
                         - script.wait: write_mode
                 else:
-                  - logger.log:
-                      level: WARN
-                      format: "Could not connect to the radiator"
-            - lambda: "id(terma_moa_ble_client).disconnect();"
+                  - lambda: |-
+                      ESP_LOGW("terma", "Could not connect to the radiator (attempt %d)", id(attempt_no));
+            - lambda: |-
+                if (id(terma_moa_ble_client).state() != esp32_ble_tracker::ClientState::IDLE)
+                  id(terma_moa_ble_client).disconnect();
             - wait_until:   # fully closed, so the next connect isn't refused
                 condition:
                   lambda: "return id(terma_moa_ble_client).state() == esp32_ble_tracker::ClientState::IDLE;"
                 timeout: 5s
+            - lambda: "id(last_try_ms) = millis();"
             - if:
                 condition:
                   lambda: "return id(pending) && id(attempt) < tries;"
@@ -319,13 +298,15 @@ script:
             if (id(pending)) return id(heat_now) ? "Retrying on" : "Retrying off";
             return id(heat_now) ? "On" : "Off";
 
-# Keep retrying an unconfirmed command, one attempt a minute.
+# Keep retrying an unconfirmed command, one attempt a minute after the last one.
 interval:
-  - interval: 60s
+  - interval: 5s
     then:
       - if:
           condition:
-            lambda: "return id(pending) && !id(apply_power).is_running();"
+            lambda: |-
+              return id(pending) && !id(apply_power).is_running() &&
+                     millis() - id(last_try_ms) >= 60000;
           then:
             - script.execute:
                 id: apply_power
@@ -341,8 +322,10 @@ switch:
     # On boot, make sure the radiator is off; a thermostat will turn it back on if needed.
     restore_mode: ALWAYS_OFF
     turn_on_action:
+      - lambda: "id(attempt_no) = 0;"
       - script.execute: { id: apply_power, heat: true, tries: 3 }
     turn_off_action:
+      - lambda: "id(attempt_no) = 0;"
       - script.execute: { id: apply_power, heat: false, tries: 3 }
 
 text_sensor:

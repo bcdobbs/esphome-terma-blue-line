@@ -13,7 +13,8 @@
 # passkey handling are left to native `ble_client` features in the YAML.
 #
 # It also exposes is_ready() (link encrypted and services discovered) so the YAML
-# can gate reads/writes without a fixed delay.
+# can gate reads/writes without a fixed delay, and request_read() to read back the
+# radiator's mode and element target.
 
 import esphome.codegen as cg
 import esphome.config_validation as cv
