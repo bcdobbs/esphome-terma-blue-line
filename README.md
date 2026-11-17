@@ -43,13 +43,15 @@ first pairing. It's built for the **ESP-IDF** framework.
 
 - **Every command** connects and reads the radiator's state first. If it's already
   as asked, nothing is written. Otherwise it switches off, (for on) writes the element
-  target and element mode, reads back to confirm, then disconnects - a few seconds.
+  target and element mode, reads back mode and target to confirm, then disconnects -
+  a few seconds.
 - **Failures are retried:** up to 3 attempts straight away, then once a minute until
   confirmed. The switch shows what was asked for; Radiator Status shows what was
   confirmed.
 - **Safety:** if the radiator reports an element target above 60 °C after switching on
   (the legacy doubled-target fault, see [Protocol versions](#protocol-versions)), it
-  is switched straight off and the status says so.
+  is switched straight off and retried until a read-back confirms it's off. Radiator
+  Status shows the fault until the next "on" command.
 - **On boot** the radiator is switched off. A Generic Thermostat turns it back on at its
   next sensor update if it still needs heat.
 - **The radiator's own buttons** aren't noticed until the next command - see
@@ -230,7 +232,7 @@ Signs the setting is wrong:
 Every change goes **off → target → mode** and is then read back. That follows J1mbo's
 safeguard for `legacy` units, which can end up with a **doubled target** when the mode
 is changed directly; if the read-back target is above 60 °C, the radiator is switched
-off and Radiator Status reports a fault.
+off (and checked) and Radiator Status reports a fault.
 
 ## Finding your radiator's MAC
 
