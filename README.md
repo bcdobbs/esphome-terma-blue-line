@@ -47,7 +47,8 @@ first pairing. It's built for the **ESP-IDF** framework.
   a few seconds.
 - **Failures are retried:** up to 3 attempts straight away, then once a minute until
   confirmed. The switch shows what was asked for; Radiator Status shows what was
-  confirmed.
+  confirmed. A failed connection is given up on as soon as it fails, so a retry
+  follows within seconds.
 - **Safety:** if the radiator reports an element target above 60 °C after switching on
   (the legacy doubled-target fault, see [Protocol versions](#protocol-versions)), it
   is switched straight off and retried until a read-back confirms it's off. Radiator
@@ -234,6 +235,41 @@ safeguard for `legacy` units, which can end up with a **doubled target** when th
 is changed directly; if the read-back target is above 60 °C, the radiator is switched
 off (and checked) and Radiator Status reports a fault.
 
+## Reading the logs
+
+A healthy command looks like this (info level):
+
+```
+[terma] Turning radiator ON (attempt 1)
+[esp32_ble_client] ... Connecting
+[esp32_ble_client] ... Connection open
+[terma_moa] Link encryption requested
+[terma_moa] Radiator signal: -71 dBm
+[esp32_ble_client] ... auth complete
+[esp32_ble_client] ... Service discovery complete
+[terma_moa] Link encrypted and services discovered - radiator ready
+[terma] Radiator is in mode 0x00 (target 60.0 C) - changing it
+[terma] Confirmed ON (mode 0x06, target 60.0 C)
+[esp32_ble_client] ... Disconnecting (conn_id: 0).
+```
+
+**`Connection open error, status=133`** followed by `Could not connect to the
+radiator` means the Bluetooth link couldn't be set up: the radiator didn't answer
+the ESP's connection request. It's retried automatically, and an occasional one is
+harmless. If you see them often:
+
+- **Check the `Radiator signal` line.** Around -80 dBm or better is comfortable;
+  below -85 dBm it's logged as a warning and connections get unreliable and slow.
+  Move the ESP closer or into line of sight. On an ESP32, Wi-Fi and Bluetooth share
+  one radio, so a weak Wi-Fi signal (shown in the ESP's startup log) makes Bluetooth
+  worse too.
+- **Switching off is usually the slow one.** An "off" command always reaches the
+  radiator while its element is heating, and that's when its Bluetooth is at its
+  worst: connections fail more often and service discovery can take 15-20 s instead
+  of about 5 s. The package allows for this.
+- **Close the Terma app.** The radiator accepts one connection at a time, so a phone
+  connected to it locks the ESP out.
+
 ## Finding your radiator's MAC
 
 The MAC may be on a label on the element. If not, have the ESP find it. iPhones
@@ -352,7 +388,9 @@ unencrypted link. ESPHome does not initiate encryption on its own, so the `terma
 component calls `esp_ble_set_encryption` on `ESP_GATTC_OPEN_EVT`. It then waits for
 both the pairing result (`ESP_GAP_BLE_AUTH_CMPL_EVT`) and service discovery before
 reporting the link ready: `id(terma_hub).is_ready()`, which the package waits on after
-each connect.
+each connect. The component also does the read-backs itself
+(`id(terma_hub).request_read()`, mode then element), so no `ble_client` sensors are
+involved.
 
 ## Acknowledgments
 
