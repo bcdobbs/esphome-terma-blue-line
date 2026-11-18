@@ -4,17 +4,24 @@
 #   skills:
 #     - brainstorming
 #
-# Minimal ESPHome external component for the Terma MOA Blue radiator.
+# ESPHome external component for Terma Blue Line (MOA Blue) radiators.
 #
-# It registers itself as a node on an existing `ble_client` and proactively
-# requests link encryption the moment the connection opens. This is the one
-# piece of behavior ESPHome does not provide natively (it accepts encryption
-# when the peer initiates it, but never initiates it itself). Bond clearing and
-# passkey handling are left to native `ble_client` features in the YAML.
+# This file is only used at build time: it defines the YAML the component accepts
+# and generates the C++ that creates it. The behaviour is in terma_moa.cpp.
 #
-# It also exposes is_ready() (link encrypted and services discovered) so the YAML
-# can gate reads/writes without a fixed delay, and request_read() to read back the
-# radiator's mode and element target.
+# The component attaches to an existing `ble_client` and:
+#   - requests link encryption as soon as the connection opens (the radiator
+#     insists on it, and ESPHome never starts it itself),
+#   - says when the link is ready to use: is_ready(),
+#   - reads back the radiator's mode and element target: request_read(),
+#   - builds and interprets values for the radiator's protocol generation.
+# Pairing (the passkey) and bond handling stay with the native `ble_client` in YAML.
+#
+# Example:
+#   terma_moa:
+#     id: terma_hub
+#     ble_client_id: terma_moa_ble_client
+#     protocol: legacy   # optional, default modern
 
 import esphome.codegen as cg
 import esphome.config_validation as cv
@@ -23,15 +30,14 @@ from esphome.const import CONF_ID
 
 DEPENDENCIES = ["ble_client"]
 
+CONF_PROTOCOL = "protocol"
+
+# The C++ names this file refers to.
 terma_moa_ns = cg.esphome_ns.namespace("terma_moa")
 TermaMoa = terma_moa_ns.class_("TermaMoa", cg.Component, ble_client.BLEClientNode)
-
-# Two protocol generations exist in the field (see README "Protocol versions"):
-#   modern - little-endian values, 4-byte mode characteristic, element mode 0x21.
-#   legacy - big-endian values, 1-byte mode characteristic, element mode 6
-#            (the protocol J1mbo's homebridge plugin targets).
-CONF_PROTOCOL = "protocol"
 TermaProtocol = terma_moa_ns.enum("TermaProtocol", is_class=True)
+
+# Protocol generations (see README "Protocol versions" and TermaProtocol in terma_moa.h).
 PROTOCOLS = {
     "modern": TermaProtocol.MODERN,
     "legacy": TermaProtocol.LEGACY,
@@ -44,14 +50,20 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_PROTOCOL, default="modern"): cv.enum(PROTOCOLS, lower=True),
         }
     )
-    .extend(ble_client.BLE_CLIENT_SCHEMA)
+    .extend(ble_client.BLE_CLIENT_SCHEMA)  # adds ble_client_id
     .extend(cv.COMPONENT_SCHEMA),
-    # The C++ uses the ESP32 Bluedroid GAP/GATTC APIs; fail at config time, not link time.
+    # The C++ uses the ESP32's Bluetooth APIs: reject other chips here rather than
+    # with a confusing compile error.
     cv.only_on_esp32,
 )
 
 
 async def to_code(config):
+    # Generates, roughly:
+    #   auto *terma_hub = new terma_moa::TermaMoa();
+    #   App.register_component(terma_hub);
+    #   terma_moa_ble_client->register_ble_node(terma_hub);
+    #   terma_hub->set_protocol(terma_moa::TermaProtocol::LEGACY);
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
     await ble_client.register_ble_node(var, config)

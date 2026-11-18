@@ -11,6 +11,7 @@
 #include "esphome/core/log.h"
 #include "esphome/components/esp32_ble_tracker/esp32_ble_tracker.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -19,90 +20,122 @@ namespace terma_moa {
 
 static const char *const TAG = "terma_moa";
 
+// The radiator's GATT service and the two characteristics we use.
 static const char *const SERVICE_UUID = "d97352b0-d19e-11e2-9e96-0800200c9a66";
-static const char *const ELEMENT_UUID = "d97352b2-d19e-11e2-9e96-0800200c9a66";  // b2
-static const char *const MODE_UUID = "d97352b3-d19e-11e2-9e96-0800200c9a66";     // b3
+static const char *const ELEMENT_UUID = "d97352b2-d19e-11e2-9e96-0800200c9a66";  // "b2": element target
+static const char *const MODE_UUID = "d97352b3-d19e-11e2-9e96-0800200c9a66";     // "b3": operating mode
+
+// Mode bytes.
+static const uint8_t MODE_OFF = 0x00;
+static const uint8_t MODE_OFF_VIA_APP = 0x20;  // modern units, newer firmware
+static const uint8_t MODE_ELEMENT_MODERN = 0x21;
+static const uint8_t MODE_ELEMENT_LEGACY = 0x06;
+
+// The element target's range. The radiator stores it in tenths of a degree.
+static const float ELEMENT_MIN_C = 30.0f;
+static const float ELEMENT_MAX_C = 60.0f;
 
 // Below this the link is marginal: expect failed connects and slow service discovery.
 static const int WEAK_RSSI_DBM = -85;
 
+static bool in_element_range(float celsius) { return celsius >= ELEMENT_MIN_C && celsius <= ELEMENT_MAX_C; }
+
+static uint16_t to_u16(uint8_t first, uint8_t second, bool big_endian) {
+  return big_endian ? (first << 8) | second : (second << 8) | first;
+}
+
 void TermaMoa::dump_config() {
   ESP_LOGCONFIG(TAG, "Terma MOA Blue: requests link encryption automatically on connect");
-  ESP_LOGCONFIG(TAG, "  Protocol: %s", this->is_legacy() ? "legacy" : "modern");
+  ESP_LOGCONFIG(TAG, "  Protocol: %s", this->is_legacy_() ? "legacy" : "modern");
 }
 
-uint16_t TermaMoa::decode_u16(const std::vector<uint8_t> &x, size_t offset) const {
-  const uint8_t a = x[offset];
-  const uint8_t b = x[offset + 1];
-  return this->is_legacy() ? (uint16_t) ((a << 8) | b) : (uint16_t) ((b << 8) | a);
+// ---------------------------------------------------------------------------
+// Connection
+// ---------------------------------------------------------------------------
+
+bool TermaMoa::is_ready() {
+  // Also check the parent: it leaves the connected state before nodes see the disconnect.
+  return this->ready_ && this->parent() != nullptr && this->parent()->connected();
 }
 
-std::vector<uint8_t> TermaMoa::encode_element_target(float celsius) const {
-  if (std::isnan(celsius))
-    celsius = 30.0f;
-  const float c = celsius < 30.0f ? 30.0f : (celsius > 60.0f ? 60.0f : celsius);
-  const uint16_t v = (uint16_t) std::lround(c * 10.0f);
-  // Bytes 0-1 zero, target in bytes 2-3, in the protocol's byte order.
-  if (this->is_legacy())
-    return {0, 0, (uint8_t) (v >> 8), (uint8_t) (v & 0xFF)};
-  return {0, 0, (uint8_t) (v & 0xFF), (uint8_t) (v >> 8)};
-}
-
-std::vector<uint8_t> TermaMoa::encode_mode(int mode) const {
-  if (this->is_legacy())
-    return {(uint8_t) mode};
-  return {(uint8_t) mode, 0, 0, 0};
-}
-
-bool TermaMoa::is_heating(int mode) const {
-  if (this->is_legacy())
-    return mode != 0x00;
-  // Modern: off is 0x00 (physical) or 0x20 (via app on newer firmware).
-  return mode != 0x00 && mode != 0x20;
-}
-
-void TermaMoa::warn_protocol_(const char *evidence) {
-  if (this->protocol_warned_)
-    return;
-  this->protocol_warned_ = true;
-  const char *other = this->is_legacy() ? "modern" : "legacy";
-  ESP_LOGW(TAG,
-           "%s - this radiator looks like it speaks the %s protocol. Set the substitution "
-           "protocol: %s and reflash (see README \"Protocol versions\").",
-           evidence, other, other);
-}
-
-void TermaMoa::check_element_payload(const std::vector<uint8_t> &x) {
-  if (this->protocol_warned_ || x.size() < 4)
-    return;
-  // The element target (bytes 2-3) is always 30-60 C. If it's only in range when read
-  // in the other byte order, the protocol setting is wrong.
-  const float as_configured = this->decode_u16(x, 2) / 10.0f;
-  const uint16_t swapped_raw =
-      this->is_legacy() ? (uint16_t) ((x[3] << 8) | x[2]) : (uint16_t) ((x[2] << 8) | x[3]);
-  const float swapped = swapped_raw / 10.0f;
-  if (!(as_configured >= 30.0f && as_configured <= 60.0f) && (swapped >= 30.0f && swapped <= 60.0f)) {
-    char evidence[96];
-    snprintf(evidence, sizeof(evidence), "Element target decodes to %.1f C, or %.1f C byte-swapped",
-             as_configured, swapped);
-    this->warn_protocol_(evidence);
+void TermaMoa::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
+                                   esp_ble_gattc_cb_param_t *param) {
+  // The parent ble_client only forwards GATTC events for its own connection.
+  switch (event) {
+    case ESP_GATTC_OPEN_EVT:
+      this->on_open_(param->open);
+      break;
+    case ESP_GATTC_SEARCH_CMPL_EVT:
+      this->on_services_discovered_();
+      break;
+    case ESP_GATTC_READ_CHAR_EVT:
+      this->on_read_(param->read);
+      break;
+    case ESP_GATTC_DISCONNECT_EVT:
+    case ESP_GATTC_CLOSE_EVT:
+      this->on_disconnect_();
+      break;
+    default:
+      break;
   }
 }
 
-void TermaMoa::check_mode_payload(const std::vector<uint8_t> &x) {
-  if (this->protocol_warned_ || x.empty())
+void TermaMoa::gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
+  // GAP events cover every connection, so each handler checks the address.
+  if (this->parent() == nullptr)
     return;
-  // Legacy units expose a 1-byte mode characteristic; modern ones a 4-byte one.
-  if (!this->is_legacy() && x.size() == 1) {
-    this->warn_protocol_("Mode characteristic is 1 byte (modern units send 4)");
-  } else if (this->is_legacy() && x.size() >= 4) {
-    this->warn_protocol_("Mode characteristic is 4 bytes (legacy units send 1)");
+  switch (event) {
+    case ESP_GAP_BLE_READ_RSSI_COMPLETE_EVT:
+      this->on_rssi_(param->read_rssi_cmpl);
+      break;
+    case ESP_GAP_BLE_AUTH_CMPL_EVT:
+      this->on_auth_complete_(param->ble_security.auth_cmpl);
+      break;
+    default:
+      break;
   }
 }
 
-void TermaMoa::find_handles_() {
-  // Called on SEARCH_CMPL, while the parent still holds the discovered services
-  // (it releases them once every node is established).
+void TermaMoa::on_open_(esp_ble_gattc_cb_param_t::gattc_open_evt_param &open) {
+  if (open.status != ESP_GATT_OK)
+    return;
+  // Request encryption straight away: with a stored bond this re-encrypts with the
+  // saved keys, otherwise it starts passkey pairing.
+  esp_err_t err = esp_ble_set_encryption(open.remote_bda, ESP_BLE_SEC_ENCRYPT);
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Link encryption requested");
+  } else {
+    ESP_LOGW(TAG, "esp_ble_set_encryption failed: %s", esp_err_to_name(err));
+  }
+  // Ask for the signal strength (logged in on_rssi_): the first thing to check when
+  // connects fail.
+  esp_ble_gap_read_rssi(open.remote_bda);
+}
+
+void TermaMoa::on_rssi_(esp_ble_gap_cb_param_t::ble_read_rssi_cmpl_evt_param &rssi) {
+  if (!this->parent()->check_addr(rssi.remote_addr) || rssi.status != ESP_BT_STATUS_SUCCESS)
+    return;
+  if (rssi.rssi < WEAK_RSSI_DBM) {
+    ESP_LOGW(TAG, "Radiator signal: %d dBm - weak, expect failed or slow connections", rssi.rssi);
+  } else {
+    ESP_LOGI(TAG, "Radiator signal: %d dBm", rssi.rssi);
+  }
+}
+
+void TermaMoa::on_auth_complete_(esp_ble_auth_cmpl_t &auth) {
+  if (!this->parent()->check_addr(auth.bd_addr))
+    return;
+  if (!auth.success) {
+    ESP_LOGW(TAG, "Encryption/pairing failed (reason 0x%02X) - is the radiator bonded, or in pairing mode?",
+             auth.fail_reason);
+  }
+  this->encrypted_ = auth.success;
+  this->update_ready_();
+}
+
+void TermaMoa::on_services_discovered_() {
+  // Look up the handles now: the parent only keeps the discovered services until
+  // every node is established.
   using esp32_ble_tracker::ESPBTUUID;
   const ESPBTUUID service = ESPBTUUID::from_raw(SERVICE_UUID);
   auto *mode = this->parent()->get_characteristic(service, ESPBTUUID::from_raw(MODE_UUID));
@@ -111,6 +144,47 @@ void TermaMoa::find_handles_() {
   this->element_handle_ = element != nullptr ? element->handle : 0;
   if (this->mode_handle_ == 0 || this->element_handle_ == 0)
     ESP_LOGW(TAG, "Radiator's mode/element characteristics not found - is this a Terma Blue Line?");
+
+  // Mark this node established, as the built-in ble_client nodes do, so the parent can
+  // free its service cache. The parent resets node_state itself on disconnect.
+  this->node_state = esp32_ble_tracker::ClientState::ESTABLISHED;
+
+  this->discovered_ = true;
+  this->update_ready_();
+}
+
+void TermaMoa::on_disconnect_() {
+  this->encrypted_ = false;
+  this->discovered_ = false;
+  this->update_ready_();
+  this->reading_ = Reading::NONE;
+  this->mode_handle_ = 0;
+  this->element_handle_ = 0;
+}
+
+// Call after changing encrypted_ or discovered_.
+void TermaMoa::update_ready_() {
+  const bool ready = this->encrypted_ && this->discovered_;
+  if (ready && !this->ready_)
+    ESP_LOGI(TAG, "Link encrypted and services discovered - radiator ready");
+  this->ready_ = ready;
+}
+
+// ---------------------------------------------------------------------------
+// Reading
+// ---------------------------------------------------------------------------
+
+bool TermaMoa::request_read() {
+  this->read_mode_ = -1;
+  this->read_target_ = NAN;
+  this->reading_ = Reading::NONE;
+  if (!this->is_ready() || this->mode_handle_ == 0 || this->element_handle_ == 0)
+    return false;
+  // One read at a time: the mode now, the element target when the mode arrives.
+  if (!this->send_read_(this->mode_handle_))
+    return false;
+  this->reading_ = Reading::MODE;
+  return true;
 }
 
 bool TermaMoa::send_read_(uint16_t handle) {
@@ -123,125 +197,122 @@ bool TermaMoa::send_read_(uint16_t handle) {
   return true;
 }
 
-bool TermaMoa::request_read() {
-  this->read_mode_ = -1;
-  this->read_target_ = NAN;
+void TermaMoa::on_read_(esp_ble_gattc_cb_param_t::gattc_read_char_evt_param &read) {
+  // Ignore any answer we aren't waiting for.
+  const bool is_mode = this->reading_ == Reading::MODE && read.handle == this->mode_handle_;
+  const bool is_element = this->reading_ == Reading::ELEMENT && read.handle == this->element_handle_;
+  if (!is_mode && !is_element)
+    return;
+
   this->reading_ = Reading::NONE;
-  if (!this->is_ready() || this->mode_handle_ == 0 || this->element_handle_ == 0)
-    return false;
-  // One at a time: mode first, then the element on its answer.
-  if (!this->send_read_(this->mode_handle_))
-    return false;
-  this->reading_ = Reading::MODE;
-  return true;
-}
-
-void TermaMoa::on_read_(const esp_ble_gattc_cb_param_t::gattc_read_char_evt_param &read) {
-  if (this->reading_ == Reading::MODE && read.handle == this->mode_handle_) {
-    this->reading_ = Reading::NONE;
-    if (read.status != ESP_GATT_OK) {
-      ESP_LOGW(TAG, "Reading the mode failed (status %d)", read.status);
-      return;
-    }
-    const std::vector<uint8_t> x(read.value, read.value + read.value_len);
-    this->check_mode_payload(x);
-    if (x.empty())
-      return;
-    this->read_mode_ = x[0];
-    if (this->send_read_(this->element_handle_))
-      this->reading_ = Reading::ELEMENT;
-  } else if (this->reading_ == Reading::ELEMENT && read.handle == this->element_handle_) {
-    this->reading_ = Reading::NONE;
-    if (read.status != ESP_GATT_OK) {
-      ESP_LOGW(TAG, "Reading the element target failed (status %d)", read.status);
-      return;
-    }
-    const std::vector<uint8_t> x(read.value, read.value + read.value_len);
-    if (x.size() < 4)
-      return;
-    this->check_element_payload(x);
-    this->read_target_ = this->decode_u16(x, 2) / 10.0f;
-  }
-}
-
-void TermaMoa::set_link_state_(bool encrypted, bool discovered) {
-  this->encrypted_ = encrypted;
-  this->discovered_ = discovered;
-  const bool ready = encrypted && discovered;
-  if (ready == this->ready_)
-    return;
-  this->ready_ = ready;
-  if (ready)
-    ESP_LOGI(TAG, "Link encrypted and services discovered - radiator ready");
-}
-
-void TermaMoa::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
-                                   esp_ble_gattc_cb_param_t *param) {
-  // The parent BLEClient only forwards GATTC events for its own connection.
-  switch (event) {
-    case ESP_GATTC_OPEN_EVT:
-      // param->open.remote_bda is the radiator's address (already verified by the
-      // parent). Request encryption the instant the link opens: with a stored bond this
-      // re-encrypts with the saved keys, otherwise it starts passkey pairing.
-      if (param->open.status == ESP_GATT_OK) {
-        esp_err_t err = esp_ble_set_encryption(param->open.remote_bda, ESP_BLE_SEC_ENCRYPT);
-        if (err == ESP_OK) {
-          ESP_LOGI(TAG, "Link encryption requested");
-        } else {
-          ESP_LOGW(TAG, "esp_ble_set_encryption failed: %s", esp_err_to_name(err));
-        }
-        // Log the signal strength: the first thing to check when connects fail.
-        esp_ble_gap_read_rssi(param->open.remote_bda);
-      }
-      break;
-    case ESP_GATTC_SEARCH_CMPL_EVT:
-      // Mark this node established once service discovery finishes, matching the
-      // built-in ble_client nodes, so the parent can release its GATT service cache.
-      // The parent resets node_state on disconnect, so no reset is needed here.
-      this->find_handles_();
-      this->node_state = esp32_ble_tracker::ClientState::ESTABLISHED;
-      this->set_link_state_(this->encrypted_, true);
-      break;
-    case ESP_GATTC_READ_CHAR_EVT:
-      this->on_read_(param->read);
-      break;
-    case ESP_GATTC_DISCONNECT_EVT:
-    case ESP_GATTC_CLOSE_EVT:
-      this->set_link_state_(false, false);
-      this->reading_ = Reading::NONE;
-      this->mode_handle_ = 0;
-      this->element_handle_ = 0;
-      break;
-    default:
-      break;
-  }
-}
-
-void TermaMoa::gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
-  // GAP events are not filtered per connection, so check the address ourselves.
-  if (this->parent() == nullptr)
-    return;
-  if (event == ESP_GAP_BLE_READ_RSSI_COMPLETE_EVT) {
-    if (!this->parent()->check_addr(param->read_rssi_cmpl.remote_addr) ||
-        param->read_rssi_cmpl.status != ESP_BT_STATUS_SUCCESS)
-      return;
-    const int rssi = param->read_rssi_cmpl.rssi;
-    if (rssi < WEAK_RSSI_DBM) {
-      ESP_LOGW(TAG, "Radiator signal: %d dBm - weak, expect failed or slow connections", rssi);
-    } else {
-      ESP_LOGI(TAG, "Radiator signal: %d dBm", rssi);
-    }
+  if (read.status != ESP_GATT_OK) {
+    ESP_LOGW(TAG, "Reading the %s failed (status %d)", is_mode ? "mode" : "element target", read.status);
     return;
   }
-  if (event != ESP_GAP_BLE_AUTH_CMPL_EVT || !this->parent()->check_addr(param->ble_security.auth_cmpl.bd_addr))
-    return;
-  if (param->ble_security.auth_cmpl.success) {
-    this->set_link_state_(true, this->discovered_);
+
+  const std::vector<uint8_t> payload(read.value, read.value + read.value_len);
+  if (is_mode) {
+    this->on_mode_read_(payload);
   } else {
-    ESP_LOGW(TAG, "Encryption/pairing failed (reason 0x%02X) - is the radiator bonded, or in pairing mode?",
-             param->ble_security.auth_cmpl.fail_reason);
-    this->set_link_state_(false, this->discovered_);
+    this->on_element_read_(payload);
   }
+}
+
+void TermaMoa::on_mode_read_(const std::vector<uint8_t> &payload) {
+  this->check_mode_payload_(payload);
+  if (payload.empty())
+    return;
+  this->read_mode_ = payload[0];
+  // Now the element target.
+  if (this->send_read_(this->element_handle_))
+    this->reading_ = Reading::ELEMENT;
+}
+
+void TermaMoa::on_element_read_(const std::vector<uint8_t> &payload) {
+  if (payload.size() < 4)
+    return;
+  this->check_element_payload_(payload);
+  this->read_target_ = this->decode_element_target_(payload);
+}
+
+// ---------------------------------------------------------------------------
+// Protocol: building and interpreting values
+// ---------------------------------------------------------------------------
+
+int TermaMoa::mode_element() const { return this->is_legacy_() ? MODE_ELEMENT_LEGACY : MODE_ELEMENT_MODERN; }
+
+bool TermaMoa::is_heating(int mode) const {
+  if (this->is_legacy_())
+    return mode != MODE_OFF;
+  // Modern units report off as 0x00 when switched off at the radiator, or 0x20 when
+  // switched off from the app on newer firmware.
+  return mode != MODE_OFF && mode != MODE_OFF_VIA_APP;
+}
+
+std::vector<uint8_t> TermaMoa::encode_mode(int mode) const {
+  if (this->is_legacy_())
+    return {(uint8_t) mode};
+  return {(uint8_t) mode, 0, 0, 0};
+}
+
+// The element payload is 4 bytes: bytes 0-1 are zero, bytes 2-3 hold the target in
+// tenths of a degree.
+std::vector<uint8_t> TermaMoa::encode_element_target(float celsius) const {
+  if (std::isnan(celsius))
+    celsius = ELEMENT_MIN_C;
+  celsius = std::clamp(celsius, ELEMENT_MIN_C, ELEMENT_MAX_C);
+  const uint16_t tenths = (uint16_t) std::lround(celsius * 10.0f);
+  const uint8_t high = tenths >> 8;
+  const uint8_t low = tenths & 0xFF;
+  if (this->is_legacy_())
+    return {0, 0, high, low};
+  return {0, 0, low, high};
+}
+
+// Needs payload.size() >= 4.
+float TermaMoa::decode_element_target_(const std::vector<uint8_t> &payload) const {
+  return to_u16(payload[2], payload[3], this->is_legacy_()) / 10.0f;
+}
+
+// ---------------------------------------------------------------------------
+// Protocol: warning when the radiator looks like the other generation
+// ---------------------------------------------------------------------------
+
+void TermaMoa::check_mode_payload_(const std::vector<uint8_t> &payload) {
+  if (this->protocol_warned_)
+    return;
+  if (!this->is_legacy_() && payload.size() == 1) {
+    this->warn_protocol_("Mode characteristic is 1 byte (modern units send 4)");
+  } else if (this->is_legacy_() && payload.size() >= 4) {
+    this->warn_protocol_("Mode characteristic is 4 bytes (legacy units send 1)");
+  }
+}
+
+// Needs payload.size() >= 4.
+void TermaMoa::check_element_payload_(const std::vector<uint8_t> &payload) {
+  if (this->protocol_warned_)
+    return;
+  // The element target is always within range. If it's only in range when read in the
+  // other byte order, the protocol setting is wrong.
+  const float as_configured = this->decode_element_target_(payload);
+  const float byte_swapped = to_u16(payload[2], payload[3], !this->is_legacy_()) / 10.0f;
+  if (!in_element_range(as_configured) && in_element_range(byte_swapped)) {
+    char evidence[96];
+    snprintf(evidence, sizeof(evidence), "Element target decodes to %.1f C, or %.1f C byte-swapped",
+             as_configured, byte_swapped);
+    this->warn_protocol_(evidence);
+  }
+}
+
+void TermaMoa::warn_protocol_(const char *evidence) {
+  if (this->protocol_warned_)
+    return;
+  this->protocol_warned_ = true;
+  const char *other = this->is_legacy_() ? "modern" : "legacy";
+  ESP_LOGW(TAG,
+           "%s - this radiator looks like it speaks the %s protocol. Set the substitution "
+           "protocol: %s and reflash (see README \"Protocol versions\").",
+           evidence, other, other);
 }
 
 }  // namespace terma_moa
